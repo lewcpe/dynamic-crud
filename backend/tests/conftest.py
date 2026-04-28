@@ -1,21 +1,23 @@
 import pytest
 from fastapi.testclient import TestClient
-import main
+from app.database import DB_PATH, run_migrations
+from app.main import app
 
 
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path):
     """Each test gets a fresh temporary database."""
-    old_path = main.DB_PATH
-    main.DB_PATH = tmp_path / "test.db"
-    main.run_migrations()
+    import app.database
+    old_path = app.database.DB_PATH
+    app.database.DB_PATH = tmp_path / "test.db"
+    run_migrations()
     yield
-    main.DB_PATH = old_path
+    app.database.DB_PATH = old_path
 
 
 @pytest.fixture
 def client():
-    return TestClient(main.app)
+    return TestClient(app)
 
 
 @pytest.fixture
