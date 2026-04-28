@@ -10,10 +10,22 @@ import UserManager from "./components/UserManager"
 import GroupManager from "./components/GroupManager"
 import DataTable from "./components/DataTable"
 
+function getTableIdFromUrl(): number | null {
+  const match = window.location.pathname.match(/^\/table\/(\d+)/)
+  return match ? Number(match[1]) : null
+}
+
+function setTableIdInUrl(tableId: number | null) {
+  const url = tableId ? `/table/${tableId}` : "/"
+  if (window.location.pathname !== url) {
+    window.history.pushState({ tableId }, "", url)
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
   const [tables, setTables] = useState<Table[]>([])
-  const [currentTableId, setCurrentTableId] = useState<number | null>(null)
+  const [currentTableId, setCurrentTableId] = useState<number | null>(getTableIdFromUrl())
   const [fields, setFields] = useState<Field[]>([])
   const [relationships, setRelationships] = useState<Relationship[]>([])
   const [items, setItems] = useState<Item[]>([])
@@ -28,10 +40,29 @@ export default function App() {
   const [name, setName] = useState("")
   const [authError, setAuthError] = useState("")
 
+  // Handle browser back/forward
+  useEffect(() => {
+    const handlePopState = () => {
+      const id = getTableIdFromUrl()
+      setCurrentTableId(id)
+    }
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
+
+  // Sync URL when table changes
+  useEffect(() => {
+    if (user) {
+      setTableIdInUrl(currentTableId)
+    }
+  }, [currentTableId, user])
+
   useEffect(() => {
     const token = localStorage.getItem("token")
     if (token) {
-      api.getMe().then(setUser).catch(() => localStorage.removeItem("token"))
+      api.getMe().then((u) => {
+        setUser(u)
+      }).catch(() => localStorage.removeItem("token"))
     }
   }, [])
 
@@ -56,12 +87,16 @@ export default function App() {
     setUser(null)
     setTables([])
     setCurrentTableId(null)
+    window.history.pushState({}, "", "/")
   }
 
   const loadTables = useCallback(async () => {
     const t = await api.listTables()
     setTables(t)
-    if (currentTableId == null && t.length > 0) {
+    const urlId = getTableIdFromUrl()
+    if (urlId && t.find((tbl) => tbl.id === urlId)) {
+      setCurrentTableId(urlId)
+    } else if (currentTableId == null && t.length > 0) {
       setCurrentTableId(t[0].id)
     }
   }, [currentTableId])
