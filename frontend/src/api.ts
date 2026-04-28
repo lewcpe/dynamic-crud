@@ -1,4 +1,4 @@
-import type { Table, Field, Item, PaginatedItems } from "./types"
+import type { Table, Field, Relationship, Item, PaginatedItems } from "./types"
 
 const BASE = "/api"
 
@@ -34,6 +34,21 @@ export const api = {
     request(`/tables/${tableId}/fields/${id}`, { method: "DELETE" }),
   reorderFields: (tableId: number, order: number[]) =>
     request(`/tables/${tableId}/fields/reorder`, { method: "POST", body: JSON.stringify(order) }),
+
+  // relationships (table-scoped)
+  listRelationships: (tableId: number) =>
+    request(`/tables/${tableId}/relationships`) as Promise<Relationship[]>,
+  createRelationship: (tableId: number, data: {
+    to_table_id: number; rel_name: string; rel_label?: string;
+    rel_type: string; from_label?: string; to_label?: string;
+  }) =>
+    request(`/tables/${tableId}/relationships`, { method: "POST", body: JSON.stringify(data) }) as Promise<Relationship>,
+  updateRelationship: (tableId: number, id: number, data: { rel_label?: string; from_label?: string; to_label?: string }) =>
+    request(`/tables/${tableId}/relationships/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<Relationship>,
+  deleteRelationship: (tableId: number, id: number) =>
+    request(`/tables/${tableId}/relationships/${id}`, { method: "DELETE" }),
+  setRelationshipLinks: (tableId: number, relId: number, data: { item_id: number; target_ids: number[] }) =>
+    request(`/tables/${tableId}/relationships/${relId}/link`, { method: "POST", body: JSON.stringify(data) }),
 
   // items (table-scoped)
   listItems: (tableId: number, params?: { page?: number; page_size?: number; search?: string; sort_by?: string; sort_dir?: string }) => {

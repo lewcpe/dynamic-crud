@@ -14,6 +14,8 @@ from pydantic import BaseModel, model_validator
 DB_PATH = Path(__file__).parent / "data.db"
 STATIC_DIR = Path(__file__).parent / "static"
 FIELD_TYPES = ["int", "float", "text", "date", "datetime"]
+REL_TYPES = ["1-1", "1-n", "n-n"]
+RESERVED_FIELD_NAMES = ("id", "owner", "created_at", "updated_at", "data")
 
 
 def get_db():
@@ -43,6 +45,22 @@ def run_migrations():
 def get_fields(conn: sqlite3.Connection, table_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM dynamic_fields WHERE table_id = ? ORDER BY field_order, id",
+        (table_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_relationships(conn: sqlite3.Connection, table_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE from_table_id = ? OR to_table_id = ?",
+        (table_id, table_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_relationships_from(conn: sqlite3.Connection, table_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE from_table_id = ?",
         (table_id,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -110,9 +128,7 @@ def drop_column_from_table(
         conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
 
 
-def item_row_to_dict(
-    row: sqlite3.Row, fields: list[dict]
-) -> dict:
+def item_row_to_dict(row: sqlite3.Row, fields: list[dict]) -> dict:
     item = dict(row)
     item.pop("data", None)
     json_data = {}
@@ -125,6 +141,102 @@ def item_row_to_dict(
         if name not in json_data:
             json_data[name] = row[name] if name in row.keys() else None
     item["fields"] = json_data
+    return item
+
+
+def get_item_label(conn: sqlite3.Connection, table_id: int, item_id: int) -> str:
+    table = get_items_table(table_id)
+    row = conn.execute(f"SELECT owner FROM {table} WHERE id = ?", (item_id,)).fetchone()
+    if row:
+        return row["owner"] or str(item_id)
+    return str(item_id)
+
+
+def enrich_item_with_relationships(
+    conn: sqlite3.Connection, table_id: int, item: dict
+) -> dict:
+    rels = get_relationships(conn, table_id)
+    relationships = {}
+    for rel in rels:
+        rel_id = rel["id"]
+        rel_name = rel["rel_name"]
+        rel_type = rel["rel_type"]
+        is_from = rel["from_table_id"] == table_id
+
+        if rel_type in ("1-1", "1-n"):
+            if is_from:
+                col = f"rel_{rel_id}"
+                fk_val = item["fields"].get(col) or item.get(col)
+                if fk_val is not None:
+                    label = get_item_label(conn, rel["to_table_id"], fk_val)
+                else:
+                    fk_val = None
+                    label = None
+                relationships[rel_name] = {
+                    "rel_id": rel_id,
+                    "rel_type": rel_type,
+                    "direction": "from",
+                    "table_id": rel["to_table_id"],
+                    "item_id": fk_val,
+                    "label": label,
+                }
+            else:
+                other_table = rel["from_table_id"]
+                other_items = get_items_table(other_table)
+                col = f"rel_{rel_id}"
+                rows = conn.execute(
+                    f"SELECT id, owner FROM {other_items} WHERE {col} = ?",
+                    (item["id"],),
+                ).fetchall()
+                relationships[rel_name] = {
+                    "rel_id": rel_id,
+                    "rel_type": rel_type,
+                    "direction": "to",
+                    "table_id": other_table,
+                    "items": [
+                        {"item_id": r["id"], "label": r["owner"] or str(r["id"])}
+                        for r in rows
+                    ],
+                }
+        elif rel_type == "n-n":
+            junction = f"rel_{rel_id}"
+            if is_from:
+                other_table = rel["to_table_id"]
+                rows = conn.execute(
+                    f"SELECT to_item_id FROM {junction} WHERE from_item_id = ?",
+                    (item["id"],),
+                ).fetchall()
+                items_list = []
+                for r in rows:
+                    tid = r["to_item_id"]
+                    label = get_item_label(conn, other_table, tid)
+                    items_list.append({"item_id": tid, "label": label})
+                relationships[rel_name] = {
+                    "rel_id": rel_id,
+                    "rel_type": rel_type,
+                    "direction": "from",
+                    "table_id": other_table,
+                    "items": items_list,
+                }
+            else:
+                other_table = rel["from_table_id"]
+                rows = conn.execute(
+                    f"SELECT from_item_id FROM {junction} WHERE to_item_id = ?",
+                    (item["id"],),
+                ).fetchall()
+                items_list = []
+                for r in rows:
+                    fid = r["from_item_id"]
+                    label = get_item_label(conn, other_table, fid)
+                    items_list.append({"item_id": fid, "label": label})
+                relationships[rel_name] = {
+                    "rel_id": rel_id,
+                    "rel_type": rel_type,
+                    "direction": "to",
+                    "table_id": other_table,
+                    "items": items_list,
+                }
+    item["relationships"] = relationships
     return item
 
 
@@ -234,6 +346,12 @@ def delete_table(table_id: int):
         conn.close()
         raise HTTPException(404, "Table not found")
 
+    rels = get_relationships(conn, table_id)
+    for rel in rels:
+        _drop_relationship_storage(conn, rel)
+
+    conn.execute("DELETE FROM dynamic_relationships WHERE from_table_id = ? OR to_table_id = ?",
+                 (table_id, table_id))
     conn.execute("DELETE FROM dynamic_fields WHERE table_id = ?", (table_id,))
     conn.execute(f"DROP TABLE IF EXISTS {get_items_table(table_id)}")
     conn.execute("DELETE FROM dynamic_tables WHERE id = ?", (table_id,))
@@ -300,7 +418,7 @@ def create_field(table_id: int, payload: FieldCreate):
         raise HTTPException(
             400, f"Field '{payload.field_name}' already exists in this table"
         )
-    if payload.field_name in ("id", "owner", "created_at", "updated_at", "data"):
+    if payload.field_name in RESERVED_FIELD_NAMES:
         conn.close()
         raise HTTPException(400, f"Field name '{payload.field_name}' is reserved")
 
@@ -398,6 +516,245 @@ def reorder_fields(table_id: int, order: list[int]):
     return {"ok": True}
 
 
+# ── Relationship management ───────────────────────────────────────────────────
+
+class RelationshipCreate(BaseModel):
+    to_table_id: int
+    rel_name: str
+    rel_label: str = ""
+    rel_type: str
+    from_label: str = ""
+    to_label: str = ""
+
+    @model_validator(mode="after")
+    def check_rel_type(self):
+        if self.rel_type not in REL_TYPES:
+            raise ValueError(f"rel_type must be one of {REL_TYPES}")
+        return self
+
+
+class RelationshipUpdate(BaseModel):
+    rel_label: str | None = None
+    from_label: str | None = None
+    to_label: str | None = None
+
+
+def _create_relationship_storage(conn: sqlite3.Connection, rel: dict):
+    rel_id = rel["id"]
+    rel_type = rel["rel_type"]
+    from_table = get_items_table(rel["from_table_id"])
+    to_table = get_items_table(rel["to_table_id"])
+
+    if rel_type in ("1-1", "1-n"):
+        col = f"rel_{rel_id}"
+        try:
+            conn.execute(
+                f"ALTER TABLE {from_table} ADD COLUMN {col} INTEGER REFERENCES {to_table}(id)"
+            )
+        except sqlite3.OperationalError:
+            pass
+    elif rel_type == "n-n":
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS rel_{rel_id} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_item_id INTEGER NOT NULL REFERENCES {from_table}(id) ON DELETE CASCADE,
+                to_item_id INTEGER NOT NULL REFERENCES {to_table}(id) ON DELETE CASCADE,
+                UNIQUE(from_item_id, to_item_id)
+            )
+        """)
+
+
+def _drop_relationship_storage(conn: sqlite3.Connection, rel: dict):
+    rel_id = rel["id"]
+    rel_type = rel["rel_type"]
+
+    if rel_type in ("1-1", "1-n"):
+        col = f"rel_{rel_id}"
+        drop_column_from_table(conn, rel["from_table_id"], col)
+    elif rel_type == "n-n":
+        conn.execute(f"DROP TABLE IF EXISTS rel_{rel_id}")
+
+
+@app.get("/api/tables/{table_id}/relationships")
+def list_relationships(table_id: int):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    rels = get_relationships(conn, table_id)
+    conn.close()
+    return rels
+
+
+@app.post("/api/tables/{table_id}/relationships", status_code=201)
+def create_relationship(table_id: int, payload: RelationshipCreate):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    _ensure_table_exists(conn, payload.to_table_id)
+
+    if not payload.rel_name or not payload.rel_name.strip():
+        conn.close()
+        raise HTTPException(400, "Relationship name is required")
+
+    existing = conn.execute(
+        "SELECT id FROM dynamic_relationships WHERE from_table_id = ? AND rel_name = ?",
+        (table_id, payload.rel_name),
+    ).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(
+            400, f"Relationship '{payload.rel_name}' already exists on this table"
+        )
+
+    conn.execute(
+        "INSERT INTO dynamic_relationships "
+        "(from_table_id, to_table_id, rel_name, rel_label, rel_type, from_label, to_label) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            table_id,
+            payload.to_table_id,
+            payload.rel_name,
+            payload.rel_label or payload.rel_name,
+            payload.rel_type,
+            payload.from_label,
+            payload.to_label,
+        ),
+    )
+    rel_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    row = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE id = ?", (rel_id,)
+    ).fetchone()
+    rel = dict(row)
+    _create_relationship_storage(conn, rel)
+    conn.commit()
+    conn.close()
+    return rel
+
+
+@app.put("/api/tables/{table_id}/relationships/{rel_id}")
+def update_relationship(table_id: int, rel_id: int, payload: RelationshipUpdate):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE id = ? AND (from_table_id = ? OR to_table_id = ?)",
+        (rel_id, table_id, table_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Relationship not found")
+
+    if payload.rel_label is not None:
+        conn.execute(
+            "UPDATE dynamic_relationships SET rel_label = ? WHERE id = ?",
+            (payload.rel_label, rel_id),
+        )
+    if payload.from_label is not None:
+        conn.execute(
+            "UPDATE dynamic_relationships SET from_label = ? WHERE id = ?",
+            (payload.from_label, rel_id),
+        )
+    if payload.to_label is not None:
+        conn.execute(
+            "UPDATE dynamic_relationships SET to_label = ? WHERE id = ?",
+            (payload.to_label, rel_id),
+        )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE id = ?", (rel_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/tables/{table_id}/relationships/{rel_id}")
+def delete_relationship(table_id: int, rel_id: int):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE id = ? AND (from_table_id = ? OR to_table_id = ?)",
+        (rel_id, table_id, table_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Relationship not found")
+
+    _drop_relationship_storage(conn, dict(row))
+    conn.execute("DELETE FROM dynamic_relationships WHERE id = ?", (rel_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Relationship link management ──────────────────────────────────────────────
+
+class RelLinkSet(BaseModel):
+    item_id: int
+    target_ids: list[int]
+
+
+@app.post("/api/tables/{table_id}/relationships/{rel_id}/link")
+def set_relationship_links(table_id: int, rel_id: int, payload: RelLinkSet):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_relationships WHERE id = ? AND (from_table_id = ? OR to_table_id = ?)",
+        (rel_id, table_id, table_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Relationship not found")
+    rel = dict(row)
+
+    if rel["rel_type"] in ("1-1", "1-n"):
+        if rel["from_table_id"] == table_id:
+            items_table = get_items_table(table_id)
+            col = f"rel_{rel_id}"
+            val = payload.target_ids[0] if payload.target_ids else None
+            conn.execute(
+                f"UPDATE {items_table} SET {col} = ? WHERE id = ?",
+                (val, payload.item_id),
+            )
+        else:
+            other_table = get_items_table(rel["from_table_id"])
+            col = f"rel_{rel_id}"
+            conn.execute(
+                f"UPDATE {other_table} SET {col} = NULL WHERE {col} = ?",
+                (payload.item_id,),
+            )
+            for tid in payload.target_ids:
+                conn.execute(
+                    f"UPDATE {other_table} SET {col} = ? WHERE id = ?",
+                    (payload.item_id, tid),
+                )
+    elif rel["rel_type"] == "n-n":
+        junction = f"rel_{rel_id}"
+        if rel["from_table_id"] == table_id:
+            conn.execute(
+                f"DELETE FROM {junction} WHERE from_item_id = ?",
+                (payload.item_id,),
+            )
+            for tid in payload.target_ids:
+                conn.execute(
+                    f"INSERT OR IGNORE INTO {junction} (from_item_id, to_item_id) VALUES (?, ?)",
+                    (payload.item_id, tid),
+                )
+        else:
+            conn.execute(
+                f"DELETE FROM {junction} WHERE to_item_id = ?",
+                (payload.item_id,),
+            )
+            for tid in payload.target_ids:
+                conn.execute(
+                    f"INSERT OR IGNORE INTO {junction} (from_item_id, to_item_id) VALUES (?, ?)",
+                    (tid, payload.item_id),
+                )
+
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 # ── CRUD items ────────────────────────────────────────────────────────────────
 
 class ItemCreate(BaseModel):
@@ -425,15 +782,18 @@ def list_items(
     field_names = [f["field_name"] for f in fields]
     items_table = get_items_table(table_id)
 
+    rels = get_relationships_from(conn, table_id)
+    rel_cols = [f"rel_{r['id']}" for r in rels if r["rel_type"] in ("1-1", "1-n")]
+
     where_clause = ""
     params: list = []
     if search:
-        search_cols = ["owner"] + field_names
+        search_cols = ["owner"] + field_names + rel_cols
         like_parts = " OR ".join(f"{c} LIKE ?" for c in search_cols)
         where_clause = f"WHERE {like_parts}"
         params = [f"%{search}%"] * len(search_cols)
 
-    allowed_sort = ["id", "owner", "created_at", "updated_at"] + field_names
+    allowed_sort = ["id", "owner", "created_at", "updated_at"] + field_names + rel_cols
     if sort_by and sort_by in allowed_sort:
         direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
         order_clause = f"ORDER BY {sort_by} {direction}"
@@ -450,6 +810,7 @@ def list_items(
     rows = conn.execute(items_sql, params + [page_size, offset]).fetchall()
 
     items = [item_row_to_dict(r, fields) for r in rows]
+    items = [enrich_item_with_relationships(conn, table_id, item) for item in items]
     conn.close()
     return {
         "total": total,
@@ -469,10 +830,13 @@ def get_item(table_id: int, item_id: int):
     row = conn.execute(
         f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
     ).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(404, "Item not found")
-    return item_row_to_dict(row, fields)
+    item = item_row_to_dict(row, fields)
+    item = enrich_item_with_relationships(conn, table_id, item)
+    conn.close()
+    return item
 
 
 @app.post("/api/tables/{table_id}/items", status_code=201)
@@ -503,8 +867,10 @@ def create_item(table_id: int, payload: ItemCreate):
     row = conn.execute(
         f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
     ).fetchone()
+    item = item_row_to_dict(row, fields)
+    item = enrich_item_with_relationships(conn, table_id, item)
     conn.close()
-    return item_row_to_dict(row, fields)
+    return item
 
 
 @app.put("/api/tables/{table_id}/items/{item_id}")
@@ -552,8 +918,10 @@ def update_item(table_id: int, item_id: int, payload: ItemUpdate):
     row = conn.execute(
         f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
     ).fetchone()
+    item = item_row_to_dict(row, fields)
+    item = enrich_item_with_relationships(conn, table_id, item)
     conn.close()
-    return item_row_to_dict(row, fields)
+    return item
 
 
 @app.delete("/api/tables/{table_id}/items/{item_id}")

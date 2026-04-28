@@ -16,7 +16,8 @@ describe("DataTable", () => {
   it("renders table columns from fields", () => {
     render(
       <DataTable
-        tableId={1} fields={fields} items={[]} total={0} page={1} pageSize={20}
+        tableId={1} fields={fields} relationships={[]} tables={[]}
+        items={[]} total={0} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={() => {}}
         onPageChange={() => {}} onSortChange={() => {}}
@@ -30,7 +31,8 @@ describe("DataTable", () => {
   it("renders item rows", () => {
     render(
       <DataTable
-        tableId={1} fields={fields} items={items} total={2} page={1} pageSize={20}
+        tableId={1} fields={fields} relationships={[]} tables={[]}
+        items={items} total={2} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={() => {}}
         onPageChange={() => {}} onSortChange={() => {}}
@@ -46,7 +48,8 @@ describe("DataTable", () => {
     const onSearch = vi.fn()
     render(
       <DataTable
-        tableId={1} fields={fields} items={[]} total={0} page={1} pageSize={20}
+        tableId={1} fields={fields} relationships={[]} tables={[]}
+        items={[]} total={0} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={onSearch}
         onPageChange={() => {}} onSortChange={() => {}}

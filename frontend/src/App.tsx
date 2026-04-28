@@ -1,15 +1,17 @@
 import { useState, useEffect, useCallback } from "react"
 import { api } from "./api"
-import type { Table, Field, Item } from "./types"
+import type { Table, Field, Relationship, Item } from "./types"
 import TableSelector from "./components/TableSelector"
 import TableManager from "./components/TableManager"
 import FieldManager from "./components/FieldManager"
+import RelationshipManager from "./components/RelationshipManager"
 import DataTable from "./components/DataTable"
 
 export default function App() {
   const [tables, setTables] = useState<Table[]>([])
   const [currentTableId, setCurrentTableId] = useState<number | null>(null)
   const [fields, setFields] = useState<Field[]>([])
+  const [relationships, setRelationships] = useState<Relationship[]>([])
   const [items, setItems] = useState<Item[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -33,6 +35,12 @@ export default function App() {
     setFields(f)
   }, [currentTableId])
 
+  const loadRelationships = useCallback(async () => {
+    if (currentTableId == null) return
+    const r = await api.listRelationships(currentTableId)
+    setRelationships(r)
+  }, [currentTableId])
+
   const loadItems = useCallback(async () => {
     if (currentTableId == null) return
     const data = await api.listItems(currentTableId, {
@@ -43,11 +51,13 @@ export default function App() {
   }, [currentTableId, page, search, sortBy, sortDir])
 
   useEffect(() => { loadFields() }, [loadFields])
+  useEffect(() => { loadRelationships() }, [loadRelationships])
   useEffect(() => { loadItems() }, [loadItems])
 
   const handleDataChange = () => {
     loadItems()
     loadFields()
+    loadRelationships()
   }
 
   const handleSearch = (s: string) => {
@@ -94,7 +104,15 @@ export default function App() {
             />
             <TableManager tables={tables} onChange={handleTablesChanged} />
             {currentTableId != null && (
-              <FieldManager tableId={currentTableId} fields={fields} onChange={handleDataChange} />
+              <>
+                <FieldManager tableId={currentTableId} fields={fields} onChange={handleDataChange} />
+                <RelationshipManager
+                  tableId={currentTableId}
+                  tables={tables}
+                  relationships={relationships}
+                  onChange={handleDataChange}
+                />
+              </>
             )}
           </div>
         </div>
@@ -108,6 +126,8 @@ export default function App() {
           <DataTable
             tableId={currentTableId}
             fields={fields}
+            relationships={relationships}
+            tables={tables}
             items={items}
             total={total}
             page={page}
