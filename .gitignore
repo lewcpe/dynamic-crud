@@ -9,3 +9,4 @@ dist/
 *.db-wal
 !_MULTI_TABLES.db
 *.swp
+backend/app/uploads/
