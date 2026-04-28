@@ -1,0 +1,216 @@
+# Multi-Table Support — Architecture & Implementation Plan
+
+## Problem
+The app currently manages a **single** dynamic table (`dynamic_items`). Users can
+define custom fields and CRUD items in that one table.  We need to support
+**multiple independent tables**, each with its own schema (fields) and data
+(items).
+
+## Design Decisions
+
+### 1. Per-Table Physical SQLite Tables
+Each logical table gets its own physical SQLite table named `items_{table_id}`
+(e.g. `items_1`, `items_2`).
+
+**Why:** Each table keeps its own column namespace — no column-name collisions
+between tables.  The existing dual-storage approach (JSON `data` column + real
+per-column values for native SQL search/sort) is preserved per table.
+
+### 2. RESTful Nested Routes
+All field/item endpoints are scoped under `/api/tables/{table_id}/…`.
+
+**Why:** Clean REST semantics.  Easy to add per-table middleware/auth later.
+Frontend URL state can naturally reflect the active table.
+
+### 3. Auto-Migration on Startup
+On first startup after upgrade, the backend detects a legacy single-table setup
+and auto-creates a "default" table, migrates existing fields/items.
+
+## Database Schema
+
+### New: `dynamic_tables` (metadata)
+```sql
+CREATE TABLE IF NOT EXISTS dynamic_tables (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,         -- machine name (slug)
+    label       TEXT    NOT NULL DEFAULT '',      -- human display name
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### Modified: `dynamic_fields` (+ table_id FK)
+```sql
+CREATE TABLE IF NOT EXISTS dynamic_fields (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id    INTEGER NOT NULL REFERENCES dynamic_tables(id) ON DELETE CASCADE,
+    field_name  TEXT    NOT NULL,
+    field_type  TEXT    NOT NULL CHECK(field_type IN ('int','float','text','date','datetime')),
+    field_label TEXT    NOT NULL DEFAULT '',
+    field_order INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(table_id, field_name)
+);
+```
+
+### Per-table items tables: `items_{table_id}`
+Created dynamically when a new table is created:
+```sql
+CREATE TABLE IF NOT EXISTS items_{id} (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT    NOT NULL DEFAULT 'default',
+    data        TEXT    NOT NULL DEFAULT '{}',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+```
+Custom field columns are added via `ALTER TABLE items_{id} ADD COLUMN …` and
+dropped via `ALTER TABLE items_{id} DROP COLUMN …` (with table-recreation
+fallback for older SQLite).
+
+### Legacy migration (one-time, on startup)
+```
+1. CREATE dynamic_tables IF NOT EXISTS
+2. IF dynamic_tables is empty AND dynamic_fields has rows:
+   a. INSERT INTO dynamic_tables (name, label) VALUES ('default', 'Default')
+   b. ALTER TABLE dynamic_fields ADD COLUMN table_id INTEGER
+      DEFAULT <new_table_id>
+   c. Recreate dynamic_fields UNIQUE constraint on (table_id, field_name)
+   d. ALTER TABLE dynamic_items RENAME TO items_<new_table_id>
+   e. All future references use items_{table_id}
+```
+
+## API Surface
+
+### Tables — `/api/tables`
+| Method   | Path                      | Description           |
+|----------|---------------------------|-----------------------|
+| `GET`    | `/api/tables`             | List all tables       |
+| `POST`   | `/api/tables`             | Create table          |
+| `PUT`    | `/api/tables/{table_id}`  | Update table          |
+| `DELETE` | `/api/tables/{table_id}`  | Delete table + cascade|
+
+POST body: `{ name: str, label?: str }`
+
+### Fields — `/api/tables/{table_id}/fields`
+| Method   | Path                                            | Description               |
+|----------|-------------------------------------------------|---------------------------|
+| `GET`    | `/api/tables/{table_id}/fields`                 | List fields for table     |
+| `POST`   | `/api/tables/{table_id}/fields`                 | Create field              |
+| `PUT`    | `/api/tables/{table_id}/fields/{field_id}`      | Update field              |
+| `DELETE` | `/api/tables/{table_id}/fields/{field_id}`      | Delete field              |
+| `POST`   | `/api/tables/{table_id}/fields/reorder`         | Reorder fields            |
+
+POST body same as current: `{ field_name, field_type, field_label }`
+
+### Items — `/api/tables/{table_id}/items`
+| Method   | Path                                            | Description               |
+|----------|-------------------------------------------------|---------------------------|
+| `GET`    | `/api/tables/{table_id}/items`                  | List items (paginated)    |
+| `GET`    | `/api/tables/{table_id}/items/{item_id}`        | Get single item           |
+| `POST`   | `/api/tables/{table_id}/items`                  | Create item               |
+| `PUT`    | `/api/tables/{table_id}/items/{item_id}`        | Update item               |
+| `DELETE` | `/api/tables/{table_id}/items/{item_id}`        | Delete item               |
+
+Query params for list unchanged: `?page, page_size, search, sort_by, sort_dir`.
+Body for create/update unchanged.
+
+## Frontend Changes
+
+### New Types (`types.ts`)
+```ts
+interface Table {
+  id: number;
+  name: string;
+  label: string;
+  created_at: string;
+}
+```
+
+### New Components
+
+**`TableSelector.tsx`** — Dropdown/combobox to switch between tables.  Shows
+  `table.label` (falls back to `table.name`).  Calls `onTableChange(tableId)`.
+
+**`TableManager.tsx`** — Dialog to create/rename/delete tables.  Renders a list
+  of tables with edit (pencil) and delete (trash) actions, plus a "New Table"
+  form (name + label).
+
+### Modified Components
+
+**`api.ts`** — Add `listTables`, `createTable`, `updateTable`, `deleteTable`.
+  Change all field/item methods to accept `tableId: number` and prefix routes
+  with `/api/tables/${tableId}/`.
+
+**`App.tsx`** — Add `currentTableId` state (or `null` before table loads).
+  On mount: load tables, auto-select first or "default".  Render
+  `<TableSelector>` / `<TableManager>` in the header.  Pass `currentTableId` to
+  all child components.  Reload fields + items when `currentTableId` changes.
+
+**`DataTable.tsx`** — Accept `tableId` prop, pass to API calls.  Show
+  table name in header.
+
+**`FieldManager.tsx`** — Accept `tableId` prop, pass to API calls.
+
+**`ItemForm.tsx`** — Accept `tableId` prop, pass to API calls.
+
+## Files Touched
+
+### Backend
+| File                      | Change                                  |
+|---------------------------|-----------------------------------------|
+| `backend/main.py`         | Add table CRUD + nest routes + migration |
+| `backend/conftest.py`     | Update fixtures for multi-table         |
+| `backend/test_fields.py`  | Update tests                            |
+| `backend/test_items.py`   | Update tests                            |
+
+### Frontend
+| File                                     | Change                                  |
+|------------------------------------------|-----------------------------------------|
+| `frontend/src/types.ts`                  | Add `Table` interface                   |
+| `frontend/src/api.ts`                    | Add table APIs, nest existing routes     |
+| `frontend/src/App.tsx`                   | Table state + selection                 |
+| `frontend/src/components/TableSelector.tsx` | NEW — table switcher                 |
+| `frontend/src/components/TableManager.tsx`  | NEW — table CRUD dialog              |
+| `frontend/src/components/DataTable.tsx`   | Accept `tableId` prop                   |
+| `frontend/src/components/FieldManager.tsx` | Accept `tableId` prop                  |
+| `frontend/src/components/ItemForm.tsx`    | Accept `tableId` prop                   |
+
+## Implementation Order (Todos)
+
+### Phase 1 — Backend Foundation
+- [ ] Add `dynamic_tables` table creation to startup
+- [ ] Add migration logic for existing single-table setups
+- [ ] Rename `dynamic_items` → `items_{table_id}` throughout backend
+- [ ] Add `/api/tables` CRUD endpoints
+- [ ] Refactor `/api/fields` → `/api/tables/{table_id}/fields`
+- [ ] Refactor `/api/items` → `/api/tables/{table_id}/items`
+
+### Phase 2 — Backend Tests
+- [ ] Update `conftest.py` fixtures (table creation, client_with_table helper)
+- [ ] Add `test_tables.py` — CRUD tests for tables
+- [ ] Update `test_fields.py` — scope to table
+- [ ] Update `test_items.py` — scope to table
+- [ ] Run full test suite, ensure all pass
+
+### Phase 3 — Frontend Foundation
+- [ ] Add `Table` type to `types.ts`
+- [ ] Add table API methods to `api.ts`
+- [ ] Modify field/item API methods to accept `tableId`
+- [ ] Build `TableSelector.tsx` component
+- [ ] Build `TableManager.tsx` component
+
+### Phase 4 — Frontend Integration
+- [ ] Wire table state into `App.tsx` (load, select, CRUD)
+- [ ] Pass `tableId` through `DataTable`, `FieldManager`, `ItemForm`
+- [ ] Run frontend test suite, ensure all pass
+
+### Phase 5 — Polish
+- [ ] Handle edge case: deleting the currently selected table
+- [ ] Handle edge case: no tables exist (empty state)
+- [ ] Visual polish for table selector/manager
+- [ ] Build frontend (`npm run build`), verify backend serves it
+
+## Backward Compatibility
+The auto-migration on startup means existing deployments upgrade seamlessly.
+The legacy `/api/fields` and `/api/items` routes can redirect or return a
+deprecation notice pointing to the new nested routes.

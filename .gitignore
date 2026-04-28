@@ -1,0 +1,8 @@
+node_modules/
+.env
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.db
+!_MULTI_TABLES.db
