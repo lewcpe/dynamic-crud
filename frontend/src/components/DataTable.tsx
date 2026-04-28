@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import type { Field, Item, Relationship, Table, RelValue } from "../types"
+import type { Field, Item, Relationship, Table, RelValue, User } from "../types"
 import { api } from "../api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,6 +33,7 @@ interface Props {
   search: string
   sortBy: string
   sortDir: string
+  user: User
   onDataChange: () => void
   onSearchChange: (s: string) => void
   onPageChange: (p: number) => void
@@ -51,6 +52,7 @@ export default function DataTable({
   search,
   sortBy,
   sortDir,
+  user,
   onDataChange,
   onSearchChange,
   onPageChange,
@@ -323,6 +325,7 @@ export default function DataTable({
         tableId={tableId}
         fields={fields}
         relationships={relationships}
+        user={user}
         item={editingItem}
       />
     </div>

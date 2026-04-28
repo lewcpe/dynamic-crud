@@ -245,6 +245,7 @@ export default function App() {
             search={search}
             sortBy={sortBy}
             sortDir={sortDir}
+            user={user}
             onDataChange={handleDataChange}
             onSearchChange={handleSearch}
             onPageChange={setPage}

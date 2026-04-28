@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { api } from "../api"
-import type { Field, Item, Relationship, RelValue } from "../types"
+import type { Field, Item, Relationship, RelValue, User } from "../types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,23 +27,30 @@ interface Props {
   tableId: number
   fields: Field[]
   relationships: Relationship[]
+  user: User
   item?: Item | null
 }
 
-export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fields, relationships, item }: Props) {
-  const [owner, setOwner] = useState("default")
+export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fields, relationships, user, item }: Props) {
+  const [owner, setOwner] = useState(user.name || user.email)
   const [values, setValues] = useState<Record<string, string>>({})
   const [relValues, setRelValues] = useState<Record<string, number | number[]>>({})
   const [systemItems, setSystemItems] = useState<Record<string, { id: number; label: string }[]>>({})
   const [tableItems, setTableItems] = useState<Record<number, { id: number; label: string }[]>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [systemUsers, setSystemUsers] = useState<{ id: number; label: string }[]>([])
 
   const fromRels = relationships.filter((r) => r.from_table_id === tableId)
+  const isAdmin = user.role === "admin"
 
   useEffect(() => {
     if (open) {
-      setOwner(item?.owner || "default")
+      if (item) {
+        setOwner(item.owner)
+      } else {
+        setOwner(user.name || user.email)
+      }
       const init: Record<string, string> = {}
       fields.forEach((f) => {
         init[f.field_name] = item?.fields?.[f.field_name] != null ? String(item.fields[f.field_name]) : ""
@@ -67,6 +74,12 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
       setError("")
     }
   }, [open, item, fields, relationships])
+
+  useEffect(() => {
+    if (open && isAdmin) {
+      api.listSystemUsers().then(setSystemUsers).catch(() => {})
+    }
+  }, [open, isAdmin])
 
   useEffect(() => {
     if (open) {
@@ -158,7 +171,22 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
         <div className="space-y-4 py-4">
           <div className="space-y-1.5">
             <Label htmlFor="owner">Owner</Label>
-            <Input id="owner" value={owner} onChange={(e) => setOwner(e.target.value)} />
+            {isAdmin ? (
+              <Select value={owner} onValueChange={setOwner}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {systemUsers.map((u) => (
+                    <SelectItem key={u.id} value={u.label}>
+                      {u.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input id="owner" value={owner} readOnly className="bg-muted" />
+            )}
           </div>
 
           {fields.map((f) => (
