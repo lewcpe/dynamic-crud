@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { api } from "../api"
 import type { Field, Item, Relationship, RelValue, User } from "../types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Upload, X, Image as ImageIcon } from "lucide-react"
 import {
   Sheet,
   SheetContent,
@@ -13,6 +14,83 @@ import {
 } from "@/components/ui/sheet"
 import SearchSelect from "./SearchSelect"
 import SearchMultiSelect from "./SearchMultiSelect"
+
+interface ImageFieldProps {
+  tableId: number
+  itemId?: number
+  fieldName: string
+  currentValue?: number | null
+  onUploaded: () => void
+}
+
+function ImageField({ tableId, itemId, fieldName, currentValue, onUploaded }: ImageFieldProps) {
+  const [uploading, setUploading] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !itemId) return
+    setUploading(true)
+    try {
+      await api.uploadImage(tableId, itemId, fieldName, file)
+      onUploaded()
+    } catch (err) {
+      console.error("Upload failed:", err)
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ""
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!currentValue || !confirm("Remove this image?")) return
+    await api.deleteImage(currentValue)
+    onUploaded()
+  }
+
+  return (
+    <div className="space-y-2">
+      {currentValue ? (
+        <div className="relative inline-block">
+          <img
+            src={api.getThumbnailUrl(currentValue)}
+            alt=""
+            className="w-[120px] h-[120px] object-cover rounded border"
+          />
+          <button
+            className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1"
+            onClick={handleDelete}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ) : (
+        <div className="w-[120px] h-[120px] border rounded flex items-center justify-center text-muted-foreground">
+          <ImageIcon className="h-8 w-8" />
+        </div>
+      )}
+      <div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleUpload}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!itemId || uploading}
+          onClick={() => fileRef.current?.click()}
+        >
+          <Upload className="h-4 w-4 mr-1" />
+          {uploading ? "Uploading..." : currentValue ? "Replace" : "Upload"}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 
 interface Props {
   open: boolean
@@ -176,6 +254,14 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
               {f.field_type === "text" && (
                 <Input id={f.field_name} value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
+              {f.field_type === "multiline" && (
+                <textarea
+                  id={f.field_name}
+                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={values[f.field_name] || ""}
+                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
+                />
+              )}
               {f.field_type === "int" && (
                 <Input id={f.field_name} type="number" step="1" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
@@ -187,6 +273,25 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
               )}
               {f.field_type === "datetime" && (
                 <Input id={f.field_name} type="datetime-local" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
+              )}
+              {f.field_type === "image" && (
+                <ImageField
+                  tableId={tableId}
+                  itemId={item?.id}
+                  fieldName={f.field_name}
+                  currentValue={item?.fields?.[f.field_name]}
+                  onUploaded={() => {
+                    // Refresh item data after upload
+                    if (item?.id) {
+                      api.getItem(tableId, item.id).then((updated) => {
+                        // Update local values
+                        const newValues = { ...values }
+                        newValues[f.field_name] = String(updated.fields[f.field_name] || "")
+                        setValues(newValues)
+                      })
+                    }
+                  }}
+                />
               )}
             </div>
           ))}

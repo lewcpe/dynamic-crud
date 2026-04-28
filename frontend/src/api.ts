@@ -180,6 +180,24 @@ export const api = {
   },
   deleteFile: (fileId: number) => request(`/files/${fileId}`, { method: "DELETE" }),
 
+  // field images
+  uploadImage: (tableId: number, itemId: number, fieldName: string, file: File) => {
+    const token = getToken()
+    const fd = new FormData()
+    fd.append("file", file)
+    return fetch(`${BASE}/tables/${tableId}/items/${itemId}/images/${fieldName}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: fd,
+    }).then((r) => {
+      if (!r.ok) throw new Error("Upload failed")
+      return r.json()
+    })
+  },
+  getThumbnailUrl: (imageId: number) => `${BASE}/field-images/${imageId}/thumbnail`,
+  getImageFileUrl: (imageId: number) => `${BASE}/field-images/${imageId}/file`,
+  deleteImage: (imageId: number) => request(`/field-images/${imageId}`, { method: "DELETE" }),
+
   // comments
   listComments: (tableId: number, itemId: number) =>
     request(`/tables/${tableId}/items/${itemId}/comments`) as Promise<Comment[]>,

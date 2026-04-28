@@ -22,10 +22,12 @@ import { X, Plus } from "lucide-react"
 
 const FIELD_TYPES = [
   { value: "text", label: "Text" },
+  { value: "multiline", label: "Multiline" },
   { value: "int", label: "Integer" },
   { value: "float", label: "Float" },
   { value: "date", label: "Date" },
   { value: "datetime", label: "DateTime" },
+  { value: "image", label: "Image" },
 ]
 
 interface Props {

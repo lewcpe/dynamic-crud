@@ -10,7 +10,7 @@ export interface Field {
   id: number
   table_id: number
   field_name: string
-  field_type: "int" | "float" | "text" | "date" | "datetime" | "file" | "files"
+  field_type: "int" | "float" | "text" | "date" | "datetime" | "file" | "files" | "multiline" | "image"
   field_label: string
   field_order: number
   created_at: string

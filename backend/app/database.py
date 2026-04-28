@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent.parent / "data.db"
-FIELD_TYPES = ["int", "float", "text", "date", "datetime", "file", "files"]
+FIELD_TYPES = ["int", "float", "text", "date", "datetime", "file", "files", "multiline", "image"]
 REL_TYPES = ["1-1", "1-n", "n-n"]
 RESERVED_FIELD_NAMES = ("id", "owner", "created_at", "updated_at", "data")
 SYSTEM_TABLES = {"users", "groups"}

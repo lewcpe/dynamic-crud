@@ -138,8 +138,21 @@ export default function DataTable({
     )
   }
 
-  const formatValue = (val: any) => {
+  const formatValue = (val: any, fieldType?: string) => {
     if (val == null) return "-"
+    if (fieldType === "image" && val) {
+      return (
+        <img
+          src={api.getThumbnailUrl(val)}
+          alt=""
+          className="w-8 h-8 object-cover rounded"
+        />
+      )
+    }
+    if (fieldType === "multiline") {
+      const text = String(val)
+      return text.length > 50 ? text.slice(0, 50) + "..." : text
+    }
     return String(val)
   }
 
@@ -346,7 +359,7 @@ export default function DataTable({
                   )}
                   {visibleFields.map((f) => (
                     <TableCell key={f.id}>
-                      {formatValue(item.fields[f.field_name])}
+                      {formatValue(item.fields[f.field_name], f.field_type)}
                     </TableCell>
                   ))}
                   {visibleRels.map((r) => (
