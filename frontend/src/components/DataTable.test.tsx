@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from "@testing-library/react"
-import { vi, describe, it, expect } from "vitest"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { vi, describe, it, expect, beforeEach } from "vitest"
 import DataTable from "./DataTable"
 import type { Field, Item, User } from "../types"
 
@@ -14,8 +14,16 @@ const items: Item[] = [
 
 const user: User = { id: 1, email: "admin@test.com", name: "Admin", role: "admin", manager_id: null, created_at: "" }
 
+beforeEach(() => {
+  vi.restoreAllMocks()
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ hidden_columns: null }),
+  }))
+})
+
 describe("DataTable", () => {
-  it("renders table columns from fields", () => {
+  it("renders table columns from fields", async () => {
     render(
       <DataTable
         tableId={1} fields={fields} relationships={[]} tables={[]}
@@ -25,12 +33,15 @@ describe("DataTable", () => {
         onPageChange={() => {}} onSortChange={() => {}}
       />
     )
-    expect(screen.getByText("ID")).toBeInTheDocument()
-    expect(screen.getByText("Owner")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText("ID")).toBeInTheDocument()
+    })
+    // Default: ID, Name visible; Owner hidden
     expect(screen.getByText("Name")).toBeInTheDocument()
+    expect(screen.queryByText("Owner")).not.toBeInTheDocument()
   })
 
-  it("renders item rows", () => {
+  it("renders item rows", async () => {
     render(
       <DataTable
         tableId={1} fields={fields} relationships={[]} tables={[]}
@@ -40,10 +51,12 @@ describe("DataTable", () => {
         onPageChange={() => {}} onSortChange={() => {}}
       />
     )
-    expect(screen.getByText("alice")).toBeInTheDocument()
-    expect(screen.getByText("bob")).toBeInTheDocument()
-    expect(screen.getByText("Alice")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText("Alice")).toBeInTheDocument()
+    })
     expect(screen.getByText("Bob")).toBeInTheDocument()
+    // Owner is hidden by default
+    expect(screen.queryByText("alice")).not.toBeInTheDocument()
   })
 
   it("calls search handler on input", async () => {
@@ -57,11 +70,14 @@ describe("DataTable", () => {
         onPageChange={() => {}} onSortChange={() => {}}
       />
     )
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search...")).toBeInTheDocument()
+    })
     fireEvent.change(screen.getByPlaceholderText("Search..."), { target: { value: "alice" } })
     expect(onSearch).toHaveBeenCalledWith("alice")
   })
 
-  it("renders reverse relationship columns", () => {
+  it("renders reverse relationship columns", async () => {
     const relationships = [
       { id: 1, from_table_id: 2, to_table_id: 1, to_system_table: null, rel_name: "manufacturer", rel_label: "Manufacturer", rel_type: "1-n" as const, from_label: "", to_label: "Products", created_at: "" },
     ]
@@ -81,6 +97,8 @@ describe("DataTable", () => {
         onPageChange={() => {}} onSortChange={() => {}}
       />
     )
-    expect(screen.getByText("Acme Corp")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText("Acme Corp")).toBeInTheDocument()
+    })
   })
 })

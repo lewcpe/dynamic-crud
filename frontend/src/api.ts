@@ -171,4 +171,12 @@ export const api = {
   updateComment: (commentId: number, content: string) =>
     request(`/comments/${commentId}`, { method: "PUT", body: JSON.stringify({ content }) }) as Promise<Comment>,
   deleteComment: (commentId: number) => request(`/comments/${commentId}`, { method: "DELETE" }),
+
+  // view preferences
+  getViewPrefs: (tableId: number) =>
+    request(`/tables/${tableId}/view-prefs`) as Promise<{ hidden_columns: string[] | null }>,
+  setViewPrefs: (tableId: number, hiddenColumns: string[]) =>
+    request(`/tables/${tableId}/view-prefs`, { method: "PUT", body: JSON.stringify({ hidden_columns: hiddenColumns }) }),
+  deleteViewPrefs: (tableId: number) =>
+    request(`/tables/${tableId}/view-prefs`, { method: "DELETE" }),
 }

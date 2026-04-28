@@ -61,16 +61,33 @@ export default function DataTable({
   const [formOpen, setFormOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set())
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
+  // Load view preferences from API
   useEffect(() => {
-    const stored = localStorage.getItem(`hiddenCols_${tableId}`)
-    if (stored) {
-      try {
-        setHiddenCols(new Set(JSON.parse(stored)))
-      } catch {}
-    }
-  }, [tableId])
+    setPrefsLoaded(false)
+    api.getViewPrefs(tableId).then((prefs) => {
+      if (prefs.hidden_columns !== null) {
+        // User has saved preferences
+        setHiddenCols(new Set(prefs.hidden_columns))
+      } else {
+        // Default: hide fields beyond the first 2, hide owner
+        const defaultHidden = new Set<string>()
+        defaultHidden.add("owner")
+        fields.forEach((f, i) => {
+          if (i >= 2) defaultHidden.add(f.field_name)
+        })
+        setHiddenCols(defaultHidden)
+      }
+      setPrefsLoaded(true)
+    })
+  }, [tableId, fields])
+
+  const savePrefs = (next: Set<string>) => {
+    setHiddenCols(next)
+    api.setViewPrefs(tableId, [...next])
+  }
 
   const toggleCol = (name: string) => {
     const next = new Set(hiddenCols)
@@ -79,8 +96,7 @@ export default function DataTable({
     } else {
       next.add(name)
     }
-    setHiddenCols(next)
-    localStorage.setItem(`hiddenCols_${tableId}`, JSON.stringify([...next]))
+    savePrefs(next)
   }
 
   const handleSort = (fieldName: string) => {
