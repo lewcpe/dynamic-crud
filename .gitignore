@@ -5,5 +5,7 @@ __pycache__/
 .venv/
 dist/
 *.db
+*.db-shm
+*.db-wal
 !_MULTI_TABLES.db
 *.swp

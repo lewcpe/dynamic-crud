@@ -11,7 +11,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { X, Plus } from "lucide-react"
+import { X, Plus, Settings } from "lucide-react"
 
 interface Props {
   tables: Table[]
@@ -22,6 +22,9 @@ export default function TableManager({ tables, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
   const [label, setLabel] = useState("")
+  const [represent, setRepresent] = useState("")
+  const [editId, setEditId] = useState<number | null>(null)
+  const [editRepresent, setEditRepresent] = useState("")
   const [error, setError] = useState("")
 
   const handleAdd = async () => {
@@ -35,9 +38,10 @@ export default function TableManager({ tables, onChange }: Props) {
       return
     }
     try {
-      await api.createTable({ name: name.trim(), label: label.trim() || name.trim() })
+      await api.createTable({ name: name.trim(), label: label.trim() || name.trim(), represent: represent.trim() })
       setName("")
       setLabel("")
+      setRepresent("")
       onChange()
     } catch (e: any) {
       setError(e.message)
@@ -50,6 +54,19 @@ export default function TableManager({ tables, onChange }: Props) {
     onChange()
   }
 
+  const handleEditRepresent = (t: Table) => {
+    setEditId(t.id)
+    setEditRepresent(t.represent || "")
+  }
+
+  const handleSaveRepresent = async () => {
+    if (editId == null) return
+    await api.updateTable(editId, { represent: editRepresent })
+    setEditId(null)
+    setEditRepresent("")
+    onChange()
+  }
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -57,28 +74,58 @@ export default function TableManager({ tables, onChange }: Props) {
           Manage Tables
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Manage Tables</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="space-y-2 max-h-48 overflow-y-auto">
+          <div className="space-y-2 max-h-60 overflow-y-auto">
             {tables.map((t) => (
-              <div key={t.id} className="flex items-center justify-between rounded bg-muted/50 px-3 py-2 text-sm">
-                <div>
-                  <span className="font-medium">{t.label || t.name}</span>
-                  {t.label && t.label !== t.name && (
-                    <span className="ml-2 text-muted-foreground">({t.name})</span>
-                  )}
+              <div key={t.id} className="rounded bg-muted/50 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-medium">{t.label || t.name}</span>
+                    {t.label && t.label !== t.name && (
+                      <span className="ml-2 text-muted-foreground">({t.name})</span>
+                    )}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => handleEditRepresent(t)}
+                      title="Edit represent expression"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive"
+                      onClick={() => handleDelete(t.id)}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-destructive"
-                  onClick={() => handleDelete(t.id)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
+                {t.represent && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Represent: <code className="bg-muted px-1 rounded">{t.represent}</code>
+                  </div>
+                )}
+                {editId === t.id && (
+                  <div className="mt-2 flex gap-2">
+                    <Input
+                      className="text-xs"
+                      value={editRepresent}
+                      onChange={(e) => setEditRepresent(e.target.value)}
+                      placeholder="{field_name} or {first} {last}"
+                    />
+                    <Button size="sm" className="h-7 text-xs" onClick={handleSaveRepresent}>Save</Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditId(null)}>Cancel</Button>
+                  </div>
+                )}
               </div>
             ))}
             {tables.length === 0 && (
@@ -104,6 +151,17 @@ export default function TableManager({ tables, onChange }: Props) {
                   placeholder={name || "Contacts"}
                 />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Represent Expression</Label>
+              <Input
+                value={represent}
+                onChange={(e) => setRepresent(e.target.value)}
+                placeholder="{first_name} {last_name} (leave empty for auto-detect)"
+              />
+              <p className="text-xs text-muted-foreground">
+                Use field names in curly braces. Default: first text field.
+              </p>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button onClick={handleAdd} className="w-full" size="sm">

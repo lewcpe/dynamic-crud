@@ -2,6 +2,7 @@ export interface Table {
   id: number
   name: string
   label: string
+  represent: string
   created_at: string
 }
 
@@ -18,7 +19,8 @@ export interface Field {
 export interface Relationship {
   id: number
   from_table_id: number
-  to_table_id: number
+  to_table_id: number | null
+  to_system_table: string | null
   rel_name: string
   rel_label: string
   rel_type: "1-1" | "1-n" | "n-n"
@@ -31,7 +33,8 @@ export interface RelSingleRef {
   rel_id: number
   rel_type: string
   direction: "from" | "to"
-  table_id: number
+  table_id: number | null
+  system_table?: string | null
   item_id: number | null
   label: string | null
 }
@@ -40,7 +43,8 @@ export interface RelMultiRef {
   rel_id: number
   rel_type: string
   direction: "from" | "to"
-  table_id: number
+  table_id: number | null
+  system_table?: string | null
   items: { item_id: number; label: string }[]
 }
 
@@ -114,4 +118,9 @@ export interface Comment {
   user_email: string
   created_at: string
   updated_at: string
+}
+
+export interface SystemItem {
+  id: number
+  label: string
 }

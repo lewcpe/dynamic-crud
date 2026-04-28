@@ -164,10 +164,22 @@ def item_row_to_dict(row: sqlite3.Row, fields: list[dict]) -> dict:
 
 def get_item_label(conn: sqlite3.Connection, table_id: int, item_id: int) -> str:
     table = get_items_table(table_id)
-    row = conn.execute(f"SELECT owner FROM {table} WHERE id = ?", (item_id,)).fetchone()
-    if row:
-        return row["owner"] or str(item_id)
-    return str(item_id)
+    row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        return str(item_id)
+
+    table_info = conn.execute("SELECT represent FROM dynamic_tables WHERE id = ?", (table_id,)).fetchone()
+    represent = table_info["represent"] if table_info and table_info["represent"] else ""
+
+    if represent:
+        fields = get_fields(conn, table_id)
+        item = item_row_to_dict(row, fields)
+        result = format_represent(represent, item)
+        if result.strip():
+            return result
+
+    owner = row["owner"] if "owner" in row.keys() else None
+    return owner or str(item_id)
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -682,6 +694,18 @@ def get_user_permissions(
 
 # ── Enrich items ──────────────────────────────────────────────────────────────
 
+def get_system_item_label(conn: sqlite3.Connection, system_table: str, item_id: int) -> str:
+    if system_table == "users":
+        row = conn.execute("SELECT name, email FROM users WHERE id = ?", (item_id,)).fetchone()
+        if row:
+            return row["name"] or row["email"] or str(item_id)
+    elif system_table == "groups":
+        row = conn.execute("SELECT name FROM groups WHERE id = ?", (item_id,)).fetchone()
+        if row:
+            return row["name"] or str(item_id)
+    return str(item_id)
+
+
 def enrich_item_with_relationships(
     conn: sqlite3.Connection, table_id: int, item: dict
 ) -> dict:
@@ -692,13 +716,17 @@ def enrich_item_with_relationships(
         rel_name = rel["rel_name"]
         rel_type = rel["rel_type"]
         is_from = rel["from_table_id"] == table_id
+        to_system = rel.get("to_system_table")
 
         if rel_type in ("1-1", "1-n"):
             if is_from:
                 col = f"rel_{rel_id}"
                 fk_val = item["fields"].get(col) or item.get(col)
                 if fk_val is not None:
-                    label = get_item_label(conn, rel["to_table_id"], fk_val)
+                    if to_system:
+                        label = get_system_item_label(conn, to_system, fk_val)
+                    else:
+                        label = get_item_label(conn, rel["to_table_id"], fk_val)
                 else:
                     fk_val = None
                     label = None
@@ -707,10 +735,13 @@ def enrich_item_with_relationships(
                     "rel_type": rel_type,
                     "direction": "from",
                     "table_id": rel["to_table_id"],
+                    "system_table": to_system,
                     "item_id": fk_val,
                     "label": label,
                 }
             else:
+                if to_system:
+                    continue
                 other_table = rel["from_table_id"]
                 other_items = get_items_table(other_table)
                 col = f"rel_{rel_id}"
@@ -731,7 +762,6 @@ def enrich_item_with_relationships(
         elif rel_type == "n-n":
             junction = f"rel_{rel_id}"
             if is_from:
-                other_table = rel["to_table_id"]
                 rows = conn.execute(
                     f"SELECT to_item_id FROM {junction} WHERE from_item_id = ?",
                     (item["id"],),
@@ -739,16 +769,22 @@ def enrich_item_with_relationships(
                 items_list = []
                 for r in rows:
                     tid = r["to_item_id"]
-                    label = get_item_label(conn, other_table, tid)
+                    if to_system:
+                        label = get_system_item_label(conn, to_system, tid)
+                    else:
+                        label = get_item_label(conn, rel["to_table_id"], tid)
                     items_list.append({"item_id": tid, "label": label})
                 relationships[rel_name] = {
                     "rel_id": rel_id,
                     "rel_type": rel_type,
                     "direction": "from",
-                    "table_id": other_table,
+                    "table_id": rel["to_table_id"],
+                    "system_table": to_system,
                     "items": items_list,
                 }
             else:
+                if to_system:
+                    continue
                 other_table = rel["from_table_id"]
                 rows = conn.execute(
                     f"SELECT from_item_id FROM {junction} WHERE to_item_id = ?",
@@ -791,11 +827,34 @@ app.add_middleware(
 class TableCreate(BaseModel):
     name: str
     label: str = ""
+    represent: str = ""
 
 
 class TableUpdate(BaseModel):
     name: str | None = None
     label: str | None = None
+    represent: str | None = None
+
+
+def get_default_represent(conn: sqlite3.Connection, table_id: int) -> str:
+    row = conn.execute(
+        "SELECT field_name FROM dynamic_fields WHERE table_id = ? AND field_type = 'text' ORDER BY field_order, id LIMIT 1",
+        (table_id,),
+    ).fetchone()
+    if row:
+        return "{" + row["field_name"] + "}"
+    return "{id}"
+
+
+def format_represent(represent: str, item: dict) -> str:
+    import re
+    def replacer(m):
+        key = m.group(1)
+        val = item.get("fields", {}).get(key)
+        if val is None:
+            val = item.get(key, "")
+        return str(val) if val is not None else ""
+    return re.sub(r"\{([^}]+)\}", replacer, represent)
 
 
 @app.get("/api/tables")
@@ -817,8 +876,8 @@ def create_table(payload: TableCreate):
         raise HTTPException(400, f"Table '{payload.name}' already exists")
 
     conn.execute(
-        "INSERT INTO dynamic_tables (name, label) VALUES (?, ?)",
-        (payload.name, payload.label or payload.name),
+        "INSERT INTO dynamic_tables (name, label, represent) VALUES (?, ?, ?)",
+        (payload.name, payload.label or payload.name, payload.represent),
     )
     table_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -857,6 +916,11 @@ def update_table(table_id: int, payload: TableUpdate):
         conn.execute(
             "UPDATE dynamic_tables SET label = ? WHERE id = ?",
             (payload.label, table_id),
+        )
+    if payload.represent is not None:
+        conn.execute(
+            "UPDATE dynamic_tables SET represent = ? WHERE id = ?",
+            (payload.represent, table_id),
         )
     conn.commit()
     row = conn.execute(
@@ -1048,8 +1112,12 @@ def reorder_fields(table_id: int, order: list[int]):
 
 # ── Relationship management ───────────────────────────────────────────────────
 
+SYSTEM_TABLES = {"users", "groups"}
+
+
 class RelationshipCreate(BaseModel):
-    to_table_id: int
+    to_table_id: int | None = None
+    to_system_table: str | None = None
     rel_name: str
     rel_label: str = ""
     rel_type: str
@@ -1060,6 +1128,10 @@ class RelationshipCreate(BaseModel):
     def check_rel_type(self):
         if self.rel_type not in REL_TYPES:
             raise ValueError(f"rel_type must be one of {REL_TYPES}")
+        if not self.to_table_id and not self.to_system_table:
+            raise ValueError("Either to_table_id or to_system_table is required")
+        if self.to_system_table and self.to_system_table not in SYSTEM_TABLES:
+            raise ValueError(f"to_system_table must be one of {SYSTEM_TABLES}")
         return self
 
 
@@ -1073,13 +1145,18 @@ def _create_relationship_storage(conn: sqlite3.Connection, rel: dict):
     rel_id = rel["id"]
     rel_type = rel["rel_type"]
     from_table = get_items_table(rel["from_table_id"])
-    to_table = get_items_table(rel["to_table_id"])
+    to_system = rel.get("to_system_table")
+
+    if to_system:
+        to_table_ref = to_system
+    else:
+        to_table_ref = get_items_table(rel["to_table_id"])
 
     if rel_type in ("1-1", "1-n"):
         col = f"rel_{rel_id}"
         try:
             conn.execute(
-                f"ALTER TABLE {from_table} ADD COLUMN {col} INTEGER REFERENCES {to_table}(id)"
+                f"ALTER TABLE {from_table} ADD COLUMN {col} INTEGER REFERENCES {to_table_ref}(id)"
             )
         except sqlite3.OperationalError:
             pass
@@ -1088,7 +1165,7 @@ def _create_relationship_storage(conn: sqlite3.Connection, rel: dict):
             CREATE TABLE IF NOT EXISTS rel_{rel_id} (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 from_item_id INTEGER NOT NULL REFERENCES {from_table}(id) ON DELETE CASCADE,
-                to_item_id INTEGER NOT NULL REFERENCES {to_table}(id) ON DELETE CASCADE,
+                to_item_id INTEGER NOT NULL REFERENCES {to_table_ref}(id) ON DELETE CASCADE,
                 UNIQUE(from_item_id, to_item_id)
             )
         """)
@@ -1118,7 +1195,8 @@ def list_relationships(table_id: int):
 def create_relationship(table_id: int, payload: RelationshipCreate):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
-    _ensure_table_exists(conn, payload.to_table_id)
+    if payload.to_table_id:
+        _ensure_table_exists(conn, payload.to_table_id)
 
     if not payload.rel_name or not payload.rel_name.strip():
         conn.close()
@@ -1136,11 +1214,12 @@ def create_relationship(table_id: int, payload: RelationshipCreate):
 
     conn.execute(
         "INSERT INTO dynamic_relationships "
-        "(from_table_id, to_table_id, rel_name, rel_label, rel_type, from_label, to_label) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(from_table_id, to_table_id, to_system_table, rel_name, rel_label, rel_type, from_label, to_label) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             table_id,
             payload.to_table_id,
+            payload.to_system_table,
             payload.rel_name,
             payload.rel_label or payload.rel_name,
             payload.rel_type,
@@ -1772,6 +1851,24 @@ def remove_group_member(group_id: int, user_id: int, admin: dict = Depends(requi
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# ── System table items (for relationship dropdowns) ───────────────────────────
+
+@app.get("/api/system/users")
+def list_system_users(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute("SELECT id, name, email FROM users ORDER BY id").fetchall()
+    conn.close()
+    return [{"id": r["id"], "label": r["name"] or r["email"]} for r in rows]
+
+
+@app.get("/api/system/groups")
+def list_system_groups(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute("SELECT id, name FROM groups ORDER BY id").fetchall()
+    conn.close()
+    return [{"id": r["id"], "label": r["name"]} for r in rows]
 
 
 # ── Permission management ─────────────────────────────────────────────────────

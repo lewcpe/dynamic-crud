@@ -66,11 +66,15 @@ export const api = {
 
   // tables
   listTables: () => request("/tables") as Promise<Table[]>,
-  createTable: (data: { name: string; label?: string }) =>
+  createTable: (data: { name: string; label?: string; represent?: string }) =>
     request("/tables", { method: "POST", body: JSON.stringify(data) }) as Promise<Table>,
-  updateTable: (id: number, data: { name?: string; label?: string }) =>
+  updateTable: (id: number, data: { name?: string; label?: string; represent?: string }) =>
     request(`/tables/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<Table>,
   deleteTable: (id: number) => request(`/tables/${id}`, { method: "DELETE" }),
+
+  // system tables (for relationship dropdowns)
+  listSystemUsers: () => request("/system/users") as Promise<{ id: number; label: string }[]>,
+  listSystemGroups: () => request("/system/groups") as Promise<{ id: number; label: string }[]>,
 
   // fields (table-scoped)
   listFields: (tableId: number) =>

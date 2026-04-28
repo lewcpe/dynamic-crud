@@ -26,6 +26,11 @@ const REL_TYPES = [
   { value: "n-n", label: "Many-to-Many" },
 ]
 
+const SYSTEM_TABLES = [
+  { value: "users", label: "System Users" },
+  { value: "groups", label: "System Groups" },
+]
+
 interface Props {
   tableId: number
   tables: Table[]
@@ -38,7 +43,9 @@ export default function RelationshipManager({ tableId, tables, relationships, on
   const [name, setName] = useState("")
   const [label, setLabel] = useState("")
   const [relType, setRelType] = useState("1-n")
+  const [targetType, setTargetType] = useState<"table" | "system">("table")
   const [toTableId, setToTableId] = useState<string>("")
+  const [toSystemTable, setToSystemTable] = useState<string>("")
   const [fromLabel, setFromLabel] = useState("")
   const [toLabel, setToLabel] = useState("")
   const [error, setError] = useState("")
@@ -55,23 +62,34 @@ export default function RelationshipManager({ tableId, tables, relationships, on
       setError("Name must start with a letter/underscore and contain only letters, digits, underscores")
       return
     }
-    if (!toTableId) {
+    if (targetType === "table" && !toTableId) {
       setError("Target table is required")
       return
     }
+    if (targetType === "system" && !toSystemTable) {
+      setError("System table is required")
+      return
+    }
     try {
-      await api.createRelationship(tableId, {
-        to_table_id: Number(toTableId),
+      const data: any = {
         rel_name: name.trim(),
         rel_label: label.trim() || name.trim(),
         rel_type: relType,
         from_label: fromLabel.trim(),
         to_label: toLabel.trim(),
-      })
+      }
+      if (targetType === "table") {
+        data.to_table_id = Number(toTableId)
+      } else {
+        data.to_system_table = toSystemTable
+      }
+      await api.createRelationship(tableId, data)
       setName("")
       setLabel("")
       setRelType("1-n")
+      setTargetType("table")
       setToTableId("")
+      setToSystemTable("")
       setFromLabel("")
       setToLabel("")
       onChange()
@@ -86,7 +104,13 @@ export default function RelationshipManager({ tableId, tables, relationships, on
     onChange()
   }
 
-  const getTableName = (id: number) => tables.find((t) => t.id === id)?.label || tables.find((t) => t.id === id)?.name || `#${id}`
+  const getTargetLabel = (r: Relationship) => {
+    if (r.to_system_table) {
+      return SYSTEM_TABLES.find((s) => s.value === r.to_system_table)?.label || r.to_system_table
+    }
+    const t = tables.find((t) => t.id === r.to_table_id)
+    return t?.label || t?.name || `#${r.to_table_id}`
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -106,7 +130,7 @@ export default function RelationshipManager({ tableId, tables, relationships, on
                 <div>
                   <span className="font-medium">{r.rel_label || r.rel_name}</span>
                   <span className="ml-2 text-muted-foreground">
-                    ({r.rel_type} &rarr; {getTableName(r.to_table_id)})
+                    ({r.rel_type} &rarr; {getTargetLabel(r)})
                   </span>
                 </div>
                 <Button
@@ -135,7 +159,7 @@ export default function RelationshipManager({ tableId, tables, relationships, on
                 <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={name || "Owner"} />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1.5">
                 <Label>Type</Label>
                 <Select value={relType} onValueChange={setRelType}>
@@ -148,18 +172,42 @@ export default function RelationshipManager({ tableId, tables, relationships, on
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Target Table</Label>
-                <Select value={toTableId} onValueChange={setToTableId}>
-                  <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                <Label>Target</Label>
+                <Select value={targetType} onValueChange={(v) => setTargetType(v as "table" | "system")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {otherTables.map((t) => (
-                      <SelectItem key={t.id} value={String(t.id)}>
-                        {t.label || t.name}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="table">User Table</SelectItem>
+                    <SelectItem value="system">System Table</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              {targetType === "table" ? (
+                <div className="space-y-1.5">
+                  <Label>Target Table</Label>
+                  <Select value={toTableId} onValueChange={setToTableId}>
+                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                    <SelectContent>
+                      {otherTables.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)}>
+                          {t.label || t.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>System Table</Label>
+                  <Select value={toSystemTable} onValueChange={setToSystemTable}>
+                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                    <SelectContent>
+                      {SYSTEM_TABLES.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
