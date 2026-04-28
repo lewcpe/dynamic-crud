@@ -29,11 +29,12 @@ const FIELD_TYPES = [
 ]
 
 interface Props {
+  tableId: number
   fields: Field[]
   onChange: () => void
 }
 
-export default function FieldManager({ fields, onChange }: Props) {
+export default function FieldManager({ tableId, fields, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
   const [type, setType] = useState("text")
@@ -51,7 +52,7 @@ export default function FieldManager({ fields, onChange }: Props) {
       return
     }
     try {
-      await api.createField({
+      await api.createField(tableId, {
         field_name: name.trim(),
         field_type: type,
         field_label: label.trim() || name.trim(),
@@ -67,7 +68,7 @@ export default function FieldManager({ fields, onChange }: Props) {
 
   const handleDelete = async (id: number) => {
     if (!confirm("Delete this field? Data in this column will be lost.")) return
-    await api.deleteField(id)
+    await api.deleteField(tableId, id)
     onChange()
   }
 

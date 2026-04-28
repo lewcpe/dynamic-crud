@@ -15,6 +15,7 @@ import { Pencil, Trash2, ArrowUpDown } from "lucide-react"
 import ItemForm from "./ItemForm"
 
 interface Props {
+  tableId: number
   fields: Field[]
   items: Item[]
   total: number
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export default function DataTable({
+  tableId,
   fields,
   items,
   total,
@@ -59,15 +61,15 @@ export default function DataTable({
 
   const handleDelete = async (id: number) => {
     if (!confirm("Delete this item?")) return
-    await api.deleteItem(id)
+    await api.deleteItem(tableId, id)
     onDataChange()
   }
 
   const handleSave = async (owner: string, data: Record<string, any>) => {
     if (editingItem) {
-      await api.updateItem(editingItem.id, { owner, data })
+      await api.updateItem(tableId, editingItem.id, { owner, data })
     } else {
-      await api.createItem({ owner, data })
+      await api.createItem(tableId, { owner, data })
     }
     onDataChange()
   }

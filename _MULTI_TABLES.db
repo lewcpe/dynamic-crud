@@ -156,59 +156,74 @@ interface Table {
 ## Files Touched
 
 ### Backend
-| File                      | Change                                  |
-|---------------------------|-----------------------------------------|
-| `backend/main.py`         | Add table CRUD + nest routes + migration |
-| `backend/conftest.py`     | Update fixtures for multi-table         |
-| `backend/test_fields.py`  | Update tests                            |
-| `backend/test_items.py`   | Update tests                            |
+| File                                    | Change                                  |
+|-----------------------------------------|-----------------------------------------|
+| `backend/pyproject.toml`                | Add `alembic>=1.14.0` dependency        |
+| `backend/alembic.ini`                   | NEW — Alembic config                   |
+| `backend/alembic/env.py`                | NEW — migration env (uses main.DB_PATH) |
+| `backend/alembic/script.py.mako`        | NEW — template                         |
+| `backend/alembic/versions/5c2f3…initial_schema.py`  | Migration 1: base tables   |
+| `backend/alembic/versions/b4323…multi_table_support.py` | Migration 2: multi-table  |
+| `backend/main.py`                       | Add table CRUD + nest routes + migration |
+| `backend/conftest.py`                   | Update fixtures for multi-table         |
+| `backend/test_tables.py`                | NEW — table CRUD + isolation tests      |
+| `backend/test_fields.py`                | Update tests                            |
+| `backend/test_items.py`                 | Update tests                            |
 
 ### Frontend
 | File                                     | Change                                  |
 |------------------------------------------|-----------------------------------------|
-| `frontend/src/types.ts`                  | Add `Table` interface                   |
+| `frontend/src/types.ts`                  | Add `Table` interface, `table_id` on Field |
 | `frontend/src/api.ts`                    | Add table APIs, nest existing routes     |
 | `frontend/src/App.tsx`                   | Table state + selection                 |
 | `frontend/src/components/TableSelector.tsx` | NEW — table switcher                 |
 | `frontend/src/components/TableManager.tsx`  | NEW — table CRUD dialog              |
 | `frontend/src/components/DataTable.tsx`   | Accept `tableId` prop                   |
 | `frontend/src/components/FieldManager.tsx` | Accept `tableId` prop                  |
-| `frontend/src/components/ItemForm.tsx`    | Accept `tableId` prop                   |
+| `frontend/src/components/ItemForm.tsx`    | (no change needed)                      |
+
+## Implementation Status
+
+**COMPLETE** — All phases implemented and tested.
+
+- Backend: 19/19 tests pass (test_fields, test_items, test_tables)
+- Frontend: 8/8 tests pass (DataTable, FieldManager, ItemForm)
+- Frontend builds successfully to `backend/static/`
 
 ## Implementation Order (Todos)
 
 ### Phase 1 — Backend Foundation
-- [ ] Add `dynamic_tables` table creation to startup
-- [ ] Add migration logic for existing single-table setups
-- [ ] Rename `dynamic_items` → `items_{table_id}` throughout backend
-- [ ] Add `/api/tables` CRUD endpoints
-- [ ] Refactor `/api/fields` → `/api/tables/{table_id}/fields`
-- [ ] Refactor `/api/items` → `/api/tables/{table_id}/items`
+- [x] Add `dynamic_tables` table creation to startup
+- [x] Add migration logic for existing single-table setups
+- [x] Rename `dynamic_items` → `items_{table_id}` throughout backend
+- [x] Add `/api/tables` CRUD endpoints
+- [x] Refactor `/api/fields` → `/api/tables/{table_id}/fields`
+- [x] Refactor `/api/items` → `/api/tables/{table_id}/items`
 
 ### Phase 2 — Backend Tests
-- [ ] Update `conftest.py` fixtures (table creation, client_with_table helper)
-- [ ] Add `test_tables.py` — CRUD tests for tables
-- [ ] Update `test_fields.py` — scope to table
-- [ ] Update `test_items.py` — scope to table
-- [ ] Run full test suite, ensure all pass
+- [x] Update `conftest.py` fixtures (table creation, client_with_table helper)
+- [x] Add `test_tables.py` — CRUD tests for tables
+- [x] Update `test_fields.py` — scope to table
+- [x] Update `test_items.py` — scope to table
+- [x] Run full test suite, ensure all pass
 
 ### Phase 3 — Frontend Foundation
-- [ ] Add `Table` type to `types.ts`
-- [ ] Add table API methods to `api.ts`
-- [ ] Modify field/item API methods to accept `tableId`
-- [ ] Build `TableSelector.tsx` component
-- [ ] Build `TableManager.tsx` component
+- [x] Add `Table` type to `types.ts`
+- [x] Add table API methods to `api.ts`
+- [x] Modify field/item API methods to accept `tableId`
+- [x] Build `TableSelector.tsx` component
+- [x] Build `TableManager.tsx` component
 
 ### Phase 4 — Frontend Integration
-- [ ] Wire table state into `App.tsx` (load, select, CRUD)
-- [ ] Pass `tableId` through `DataTable`, `FieldManager`, `ItemForm`
-- [ ] Run frontend test suite, ensure all pass
+- [x] Wire table state into `App.tsx` (load, select, CRUD)
+- [x] Pass `tableId` through `DataTable`, `FieldManager`, `ItemForm`
+- [x] Run frontend test suite, ensure all pass
 
 ### Phase 5 — Polish
-- [ ] Handle edge case: deleting the currently selected table
-- [ ] Handle edge case: no tables exist (empty state)
-- [ ] Visual polish for table selector/manager
-- [ ] Build frontend (`npm run build`), verify backend serves it
+- [x] Handle edge case: deleting the currently selected table
+- [x] Handle edge case: no tables exist (empty state)
+- [x] Visual polish for table selector/manager
+- [x] Build frontend (`npm run build`), verify backend serves it
 
 ## Backward Compatibility
 The auto-migration on startup means existing deployments upgrade seamlessly.

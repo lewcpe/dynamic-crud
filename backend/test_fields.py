@@ -1,5 +1,9 @@
-def test_create_field(client):
-    resp = client.post("/api/fields", json={"field_name": "status", "field_type": "text", "field_label": "Status"})
+def test_create_field(client, default_table):
+    tid = default_table
+    resp = client.post(
+        f"/api/tables/{tid}/fields",
+        json={"field_name": "status", "field_type": "text", "field_label": "Status"},
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["field_name"] == "status"
@@ -8,7 +12,8 @@ def test_create_field(client):
 
 
 def test_list_fields(client_with_fields):
-    resp = client_with_fields.get("/api/fields")
+    client, tid = client_with_fields
+    resp = client.get(f"/api/tables/{tid}/fields")
     assert resp.status_code == 200
     fields = resp.json()
     assert len(fields) == 2
@@ -18,23 +23,32 @@ def test_list_fields(client_with_fields):
 
 
 def test_update_field(client_with_fields):
-    fields = client_with_fields.get("/api/fields").json()
+    client, tid = client_with_fields
+    fields = client.get(f"/api/tables/{tid}/fields").json()
     fid = fields[0]["id"]
-    resp = client_with_fields.put(f"/api/fields/{fid}", json={"field_label": "Full Name"})
+    resp = client.put(
+        f"/api/tables/{tid}/fields/{fid}",
+        json={"field_label": "Full Name"},
+    )
     assert resp.status_code == 200
     assert resp.json()["field_label"] == "Full Name"
 
 
 def test_delete_field(client_with_fields):
-    fields = client_with_fields.get("/api/fields").json()
+    client, tid = client_with_fields
+    fields = client.get(f"/api/tables/{tid}/fields").json()
     fid = fields[0]["id"]
-    resp = client_with_fields.delete(f"/api/fields/{fid}")
+    resp = client.delete(f"/api/tables/{tid}/fields/{fid}")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    remaining = client_with_fields.get("/api/fields").json()
+    remaining = client.get(f"/api/tables/{tid}/fields").json()
     assert len(remaining) == 1
 
 
 def test_create_duplicate_field(client_with_fields):
-    resp = client_with_fields.post("/api/fields", json={"field_name": "name", "field_type": "text", "field_label": "Dup"})
+    client, tid = client_with_fields
+    resp = client.post(
+        f"/api/tables/{tid}/fields",
+        json={"field_name": "name", "field_type": "text", "field_label": "Dup"},
+    )
     assert resp.status_code == 400

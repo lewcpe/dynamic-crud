@@ -5,8 +5,8 @@ import ItemForm from "./ItemForm"
 import type { Field } from "../types"
 
 const fields: Field[] = [
-  { id: 1, field_name: "name", field_type: "text", field_label: "Name", field_order: 0, created_at: "" },
-  { id: 2, field_name: "age", field_type: "int", field_label: "Age", field_order: 1, created_at: "" },
+  { id: 1, table_id: 1, field_name: "name", field_type: "text", field_label: "Name", field_order: 0, created_at: "" },
+  { id: 2, table_id: 1, field_name: "age", field_type: "int", field_label: "Age", field_order: 1, created_at: "" },
 ]
 
 beforeEach(() => {

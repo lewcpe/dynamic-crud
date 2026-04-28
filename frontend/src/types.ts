@@ -1,5 +1,13 @@
+export interface Table {
+  id: number
+  name: string
+  label: string
+  created_at: string
+}
+
 export interface Field {
   id: number
+  table_id: number
   field_name: string
   field_type: "int" | "float" | "text" | "date" | "datetime"
   field_label: string

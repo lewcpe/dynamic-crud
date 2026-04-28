@@ -4,7 +4,7 @@ import DataTable from "./DataTable"
 import type { Field, Item } from "../types"
 
 const fields: Field[] = [
-  { id: 1, field_name: "name", field_type: "text", field_label: "Name", field_order: 0, created_at: "" },
+  { id: 1, table_id: 1, field_name: "name", field_type: "text", field_label: "Name", field_order: 0, created_at: "" },
 ]
 
 const items: Item[] = [
@@ -16,7 +16,7 @@ describe("DataTable", () => {
   it("renders table columns from fields", () => {
     render(
       <DataTable
-        fields={fields} items={[]} total={0} page={1} pageSize={20}
+        tableId={1} fields={fields} items={[]} total={0} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={() => {}}
         onPageChange={() => {}} onSortChange={() => {}}
@@ -30,7 +30,7 @@ describe("DataTable", () => {
   it("renders item rows", () => {
     render(
       <DataTable
-        fields={fields} items={items} total={2} page={1} pageSize={20}
+        tableId={1} fields={fields} items={items} total={2} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={() => {}}
         onPageChange={() => {}} onSortChange={() => {}}
@@ -46,7 +46,7 @@ describe("DataTable", () => {
     const onSearch = vi.fn()
     render(
       <DataTable
-        fields={fields} items={[]} total={0} page={1} pageSize={20}
+        tableId={1} fields={fields} items={[]} total={0} page={1} pageSize={20}
         search="" sortBy="id" sortDir="desc"
         onDataChange={() => {}} onSearchChange={onSearch}
         onPageChange={() => {}} onSortChange={() => {}}

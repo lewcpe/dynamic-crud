@@ -13,7 +13,6 @@ from pydantic import BaseModel, model_validator
 
 DB_PATH = Path(__file__).parent / "data.db"
 STATIC_DIR = Path(__file__).parent / "static"
-
 FIELD_TYPES = ["int", "float", "text", "date", "datetime"]
 
 
@@ -25,33 +24,27 @@ def get_db():
     return conn
 
 
-def init_db():
-    conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS dynamic_fields (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            field_name TEXT NOT NULL UNIQUE,
-            field_type TEXT NOT NULL CHECK(field_type IN ('int','float','text','date','datetime')),
-            field_label TEXT NOT NULL DEFAULT '',
-            field_order INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS dynamic_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner TEXT NOT NULL DEFAULT 'default',
-            data TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    conn.commit()
-    conn.close()
+def get_items_table(table_id: int) -> str:
+    return f"items_{table_id}"
 
 
-def get_fields(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("SELECT * FROM dynamic_fields ORDER BY field_order, id").fetchall()
+def run_migrations():
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config()
+    alembic_cfg.set_main_option(
+        "script_location", str(Path(__file__).parent / "alembic")
+    )
+    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{DB_PATH}")
+    command.upgrade(alembic_cfg, "head")
+
+
+def get_fields(conn: sqlite3.Connection, table_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM dynamic_fields WHERE table_id = ? ORDER BY field_order, id",
+        (table_id,),
+    ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -81,36 +74,63 @@ def validate_item_data(fields: list[dict], data: dict) -> dict:
     return validated
 
 
-def alter_table_for_new_field(conn: sqlite3.Connection, field_name: str, field_type: str):
+def alter_table_for_new_field(
+    conn: sqlite3.Connection, table_id: int, field_name: str, field_type: str
+):
+    table = get_items_table(table_id)
     sqlite_type = "TEXT"
     if field_type == "int":
         sqlite_type = "INTEGER"
     elif field_type == "float":
         sqlite_type = "REAL"
     try:
-        conn.execute(f"ALTER TABLE dynamic_items ADD COLUMN {field_name} {sqlite_type}")
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {field_name} {sqlite_type}")
     except sqlite3.OperationalError:
         pass
 
 
-def drop_column_from_table(conn: sqlite3.Connection, field_name: str):
-    """SQLite 3.35+ supports DROP COLUMN. Recreate table as fallback."""
+def drop_column_from_table(
+    conn: sqlite3.Connection, table_id: int, field_name: str
+):
+    table = get_items_table(table_id)
     try:
-        conn.execute(f"ALTER TABLE dynamic_items DROP COLUMN {field_name}")
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {field_name}")
     except sqlite3.OperationalError:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(dynamic_items)").fetchall()]
+        cols = [
+            r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        ]
         if field_name not in cols:
             return
-        cols = [c for c in cols if c != field_name]
+        cols.remove(field_name)
         quoted = ", ".join(cols)
-        conn.execute("CREATE TABLE dynamic_items_new AS SELECT " + quoted + " FROM dynamic_items")
-        conn.execute("DROP TABLE dynamic_items")
-        conn.execute("ALTER TABLE dynamic_items_new RENAME TO dynamic_items")
+        conn.execute(
+            f"CREATE TABLE {table}_new AS SELECT {quoted} FROM {table}"
+        )
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+
+
+def item_row_to_dict(
+    row: sqlite3.Row, fields: list[dict]
+) -> dict:
+    item = dict(row)
+    item.pop("data", None)
+    json_data = {}
+    try:
+        json_data = json.loads(row["data"] or "{}")
+    except json.JSONDecodeError:
+        pass
+    for f in fields:
+        name = f["field_name"]
+        if name not in json_data:
+            json_data[name] = row[name] if name in row.keys() else None
+    item["fields"] = json_data
+    return item
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    run_migrations()
     yield
 
 
@@ -124,7 +144,105 @@ app.add_middleware(
 )
 
 
-# ── Field management ────────────────────────────────────────────────────────
+# ── Table management ──────────────────────────────────────────────────────────
+
+class TableCreate(BaseModel):
+    name: str
+    label: str = ""
+
+
+class TableUpdate(BaseModel):
+    name: str | None = None
+    label: str | None = None
+
+
+@app.get("/api/tables")
+def list_tables():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM dynamic_tables ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/tables", status_code=201)
+def create_table(payload: TableCreate):
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM dynamic_tables WHERE name = ?", (payload.name,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(400, f"Table '{payload.name}' already exists")
+
+    conn.execute(
+        "INSERT INTO dynamic_tables (name, label) VALUES (?, ?)",
+        (payload.name, payload.label or payload.name),
+    )
+    table_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    conn.execute(f"""
+        CREATE TABLE {get_items_table(table_id)} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner TEXT NOT NULL DEFAULT 'default',
+            data TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM dynamic_tables WHERE id = ?", (table_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.put("/api/tables/{table_id}")
+def update_table(table_id: int, payload: TableUpdate):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM dynamic_tables WHERE id = ?", (table_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Table not found")
+    if payload.name is not None:
+        conn.execute(
+            "UPDATE dynamic_tables SET name = ? WHERE id = ?",
+            (payload.name, table_id),
+        )
+    if payload.label is not None:
+        conn.execute(
+            "UPDATE dynamic_tables SET label = ? WHERE id = ?",
+            (payload.label, table_id),
+        )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM dynamic_tables WHERE id = ?", (table_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+@app.delete("/api/tables/{table_id}")
+def delete_table(table_id: int):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM dynamic_tables WHERE id = ?", (table_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Table not found")
+
+    conn.execute("DELETE FROM dynamic_fields WHERE table_id = ?", (table_id,))
+    conn.execute(f"DROP TABLE IF EXISTS {get_items_table(table_id)}")
+    conn.execute("DELETE FROM dynamic_tables WHERE id = ?", (table_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Field management ──────────────────────────────────────────────────────────
 
 class FieldCreate(BaseModel):
     field_name: str
@@ -149,82 +267,138 @@ class FieldUpdate(BaseModel):
         return self
 
 
+def _ensure_table_exists(conn: sqlite3.Connection, table_id: int):
+    row = conn.execute(
+        "SELECT id FROM dynamic_tables WHERE id = ?", (table_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Table not found")
+    return row
 
 
-@app.get("/api/fields")
-def list_fields():
+@app.get("/api/tables/{table_id}/fields")
+def list_fields(table_id: int):
     conn = get_db()
-    fields = get_fields(conn)
+    _ensure_table_exists(conn, table_id)
+    fields = get_fields(conn, table_id)
     conn.close()
     return fields
 
 
-@app.post("/api/fields", status_code=201)
-def create_field(payload: FieldCreate):
+@app.post("/api/tables/{table_id}/fields", status_code=201)
+def create_field(table_id: int, payload: FieldCreate):
     conn = get_db()
-    existing = conn.execute("SELECT id FROM dynamic_fields WHERE field_name=?", (payload.field_name,)).fetchone()
+    _ensure_table_exists(conn, table_id)
+
+    existing = conn.execute(
+        "SELECT id FROM dynamic_fields WHERE table_id = ? AND field_name = ?",
+        (table_id, payload.field_name),
+    ).fetchone()
     if existing:
         conn.close()
-        raise HTTPException(400, f"Field '{payload.field_name}' already exists")
+        raise HTTPException(
+            400, f"Field '{payload.field_name}' already exists in this table"
+        )
     if payload.field_name in ("id", "owner", "created_at", "updated_at", "data"):
         conn.close()
         raise HTTPException(400, f"Field name '{payload.field_name}' is reserved")
 
-    max_order = conn.execute("SELECT COALESCE(MAX(field_order),-1) FROM dynamic_fields").fetchone()[0]
+    max_order = conn.execute(
+        "SELECT COALESCE(MAX(field_order), -1) FROM dynamic_fields WHERE table_id = ?",
+        (table_id,),
+    ).fetchone()[0]
+
     conn.execute(
-        "INSERT INTO dynamic_fields (field_name, field_type, field_label, field_order) VALUES (?,?,?,?)",
-        (payload.field_name, payload.field_type, payload.field_label or payload.field_name, max_order + 1),
+        "INSERT INTO dynamic_fields (table_id, field_name, field_type, field_label, field_order) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            table_id,
+            payload.field_name,
+            payload.field_type,
+            payload.field_label or payload.field_name,
+            max_order + 1,
+        ),
     )
-    alter_table_for_new_field(conn, payload.field_name, payload.field_type)
+    alter_table_for_new_field(conn, table_id, payload.field_name, payload.field_type)
     conn.commit()
-    row = conn.execute("SELECT * FROM dynamic_fields WHERE field_name=?", (payload.field_name,)).fetchone()
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_fields WHERE table_id = ? AND field_name = ?",
+        (table_id, payload.field_name),
+    ).fetchone()
     conn.close()
     return dict(row)
 
 
-@app.put("/api/fields/{field_id}")
-def update_field(field_id: int, payload: FieldUpdate):
+@app.put("/api/tables/{table_id}/fields/{field_id}")
+def update_field(table_id: int, field_id: int, payload: FieldUpdate):
     conn = get_db()
-    row = conn.execute("SELECT * FROM dynamic_fields WHERE id=?", (field_id,)).fetchone()
+    _ensure_table_exists(conn, table_id)
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_fields WHERE id = ? AND table_id = ?",
+        (field_id, table_id),
+    ).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Field not found")
+
     if payload.field_label is not None:
-        conn.execute("UPDATE dynamic_fields SET field_label=? WHERE id=?", (payload.field_label, field_id))
+        conn.execute(
+            "UPDATE dynamic_fields SET field_label = ? WHERE id = ?",
+            (payload.field_label, field_id),
+        )
     if payload.field_type is not None:
-        conn.execute("UPDATE dynamic_fields SET field_type=? WHERE id=?", (payload.field_type, field_id))
+        conn.execute(
+            "UPDATE dynamic_fields SET field_type = ? WHERE id = ?",
+            (payload.field_type, field_id),
+        )
     conn.commit()
-    row = conn.execute("SELECT * FROM dynamic_fields WHERE id=?", (field_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM dynamic_fields WHERE id = ?", (field_id,)
+    ).fetchone()
     conn.close()
     return dict(row)
 
 
-@app.delete("/api/fields/{field_id}")
-def delete_field(field_id: int):
+@app.delete("/api/tables/{table_id}/fields/{field_id}")
+def delete_field(table_id: int, field_id: int):
     conn = get_db()
-    row = conn.execute("SELECT * FROM dynamic_fields WHERE id=?", (field_id,)).fetchone()
+    _ensure_table_exists(conn, table_id)
+
+    row = conn.execute(
+        "SELECT * FROM dynamic_fields WHERE id = ? AND table_id = ?",
+        (field_id, table_id),
+    ).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Field not found")
+
     field_name = row["field_name"]
-    conn.execute("DELETE FROM dynamic_fields WHERE id=?", (field_id,))
-    drop_column_from_table(conn, field_name)
+    conn.execute("DELETE FROM dynamic_fields WHERE id = ?", (field_id,))
+    drop_column_from_table(conn, table_id, field_name)
     conn.commit()
     conn.close()
     return {"ok": True}
 
 
-@app.post("/api/fields/reorder")
-def reorder_fields(order: list[int]):
+@app.post("/api/tables/{table_id}/fields/reorder")
+def reorder_fields(table_id: int, order: list[int]):
     conn = get_db()
+    _ensure_table_exists(conn, table_id)
+
     for idx, fid in enumerate(order):
-        conn.execute("UPDATE dynamic_fields SET field_order=? WHERE id=?", (idx, fid))
+        conn.execute(
+            "UPDATE dynamic_fields SET field_order = ? WHERE id = ? AND table_id = ?",
+            (idx, fid, table_id),
+        )
     conn.commit()
     conn.close()
     return {"ok": True}
 
 
-# ── CRUD items ───────────────────────────────────────────────────────────────
+# ── CRUD items ────────────────────────────────────────────────────────────────
 
 class ItemCreate(BaseModel):
     owner: str = "default"
@@ -236,25 +410,9 @@ class ItemUpdate(BaseModel):
     data: dict[str, Any] | None = None
 
 
-def item_row_to_dict(row: sqlite3.Row, fields: list[dict]) -> dict:
-    item = dict(row)
-    item.pop("data")
-    json_data = {}
-    try:
-        json_data = json.loads(row["data"] or "{}")
-    except json.JSONDecodeError:
-        pass
-    for f in fields:
-        name = f["field_name"]
-        if name not in json_data:
-            json_data[name] = row[name] if name in row.keys() else None
-        # prefer json value
-    item["fields"] = json_data
-    return item
-
-
-@app.get("/api/items")
+@app.get("/api/tables/{table_id}/items")
 def list_items(
+    table_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=1000),
     search: str | None = None,
@@ -262,8 +420,10 @@ def list_items(
     sort_dir: str = "asc",
 ):
     conn = get_db()
-    fields = get_fields(conn)
+    _ensure_table_exists(conn, table_id)
+    fields = get_fields(conn, table_id)
     field_names = [f["field_name"] for f in fields]
+    items_table = get_items_table(table_id)
 
     where_clause = ""
     params: list = []
@@ -273,17 +433,20 @@ def list_items(
         where_clause = f"WHERE {like_parts}"
         params = [f"%{search}%"] * len(search_cols)
 
-    if sort_by and (sort_by in field_names or sort_by in ("id", "owner", "created_at", "updated_at")):
+    allowed_sort = ["id", "owner", "created_at", "updated_at"] + field_names
+    if sort_by and sort_by in allowed_sort:
         direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
         order_clause = f"ORDER BY {sort_by} {direction}"
     else:
         order_clause = "ORDER BY id DESC"
 
-    count_sql = f"SELECT COUNT(*) FROM dynamic_items {where_clause}"
+    count_sql = f"SELECT COUNT(*) FROM {items_table} {where_clause}"
     total = conn.execute(count_sql, params).fetchone()[0]
 
     offset = (page - 1) * page_size
-    items_sql = f"SELECT * FROM dynamic_items {where_clause} {order_clause} LIMIT ? OFFSET ?"
+    items_sql = (
+        f"SELECT * FROM {items_table} {where_clause} {order_clause} LIMIT ? OFFSET ?"
+    )
     rows = conn.execute(items_sql, params + [page_size, offset]).fetchall()
 
     items = [item_row_to_dict(r, fields) for r in rows]
@@ -296,80 +459,116 @@ def list_items(
     }
 
 
-@app.get("/api/items/{item_id}")
-def get_item(item_id: int):
+@app.get("/api/tables/{table_id}/items/{item_id}")
+def get_item(table_id: int, item_id: int):
     conn = get_db()
-    fields = get_fields(conn)
-    row = conn.execute("SELECT * FROM dynamic_items WHERE id=?", (item_id,)).fetchone()
+    _ensure_table_exists(conn, table_id)
+    fields = get_fields(conn, table_id)
+    items_table = get_items_table(table_id)
+
+    row = conn.execute(
+        f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
+    ).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404, "Item not found")
     return item_row_to_dict(row, fields)
 
 
-@app.post("/api/items", status_code=201)
-def create_item(payload: ItemCreate):
+@app.post("/api/tables/{table_id}/items", status_code=201)
+def create_item(table_id: int, payload: ItemCreate):
     conn = get_db()
-    fields = get_fields(conn)
+    _ensure_table_exists(conn, table_id)
+    fields = get_fields(conn, table_id)
     validated = validate_item_data(fields, payload.data)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     json_data = json.dumps(validated, ensure_ascii=False)
+    items_table = get_items_table(table_id)
+
     conn.execute(
-        "INSERT INTO dynamic_items (owner, data, created_at, updated_at) VALUES (?,?,?,?)",
+        f"INSERT INTO {items_table} (owner, data, created_at, updated_at) VALUES (?, ?, ?, ?)",
         (payload.owner, json_data, now, now),
     )
-    # Also set per-column values for direct SQL querying
     item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
     set_cols = ", ".join(f"{k} = ?" for k in validated if validated[k] is not None)
     set_vals = [v for v in validated.values() if v is not None]
     if set_cols:
-        conn.execute(f"UPDATE dynamic_items SET {set_cols} WHERE id=?", set_vals + [item_id])
+        conn.execute(
+            f"UPDATE {items_table} SET {set_cols} WHERE id = ?",
+            set_vals + [item_id],
+        )
     conn.commit()
-    row = conn.execute("SELECT * FROM dynamic_items WHERE id=?", (item_id,)).fetchone()
+
+    row = conn.execute(
+        f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
+    ).fetchone()
     conn.close()
     return item_row_to_dict(row, fields)
 
 
-@app.put("/api/items/{item_id}")
-def update_item(item_id: int, payload: ItemUpdate):
+@app.put("/api/tables/{table_id}/items/{item_id}")
+def update_item(table_id: int, item_id: int, payload: ItemUpdate):
     conn = get_db()
-    fields = get_fields(conn)
-    row = conn.execute("SELECT * FROM dynamic_items WHERE id=?", (item_id,)).fetchone()
+    _ensure_table_exists(conn, table_id)
+    fields = get_fields(conn, table_id)
+    items_table = get_items_table(table_id)
+
+    row = conn.execute(
+        f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
+    ).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404, "Item not found")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     if payload.owner is not None:
-        conn.execute("UPDATE dynamic_items SET owner=?, updated_at=? WHERE id=?", (payload.owner, now, item_id))
+        conn.execute(
+            f"UPDATE {items_table} SET owner = ?, updated_at = ? WHERE id = ?",
+            (payload.owner, now, item_id),
+        )
     else:
-        conn.execute("UPDATE dynamic_items SET updated_at=? WHERE id=?", (now, item_id))
+        conn.execute(
+            f"UPDATE {items_table} SET updated_at = ? WHERE id = ?",
+            (now, item_id),
+        )
 
     if payload.data is not None:
         validated = validate_item_data(fields, payload.data)
         json_data = json.dumps(validated, ensure_ascii=False)
-        conn.execute("UPDATE dynamic_items SET data=? WHERE id=?", (json_data, item_id))
+        conn.execute(
+            f"UPDATE {items_table} SET data = ? WHERE id = ?",
+            (json_data, item_id),
+        )
         set_cols = ", ".join(f"{k} = ?" for k in validated if validated[k] is not None)
         set_vals = [v for v in validated.values() if v is not None]
         if set_cols:
-            conn.execute(f"UPDATE dynamic_items SET {set_cols} WHERE id=?", set_vals + [item_id])
+            conn.execute(
+                f"UPDATE {items_table} SET {set_cols} WHERE id = ?",
+                set_vals + [item_id],
+            )
 
     conn.commit()
-    row = conn.execute("SELECT * FROM dynamic_items WHERE id=?", (item_id,)).fetchone()
+    row = conn.execute(
+        f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)
+    ).fetchone()
     conn.close()
     return item_row_to_dict(row, fields)
 
 
-@app.delete("/api/items/{item_id}")
-def delete_item(item_id: int):
+@app.delete("/api/tables/{table_id}/items/{item_id}")
+def delete_item(table_id: int, item_id: int):
     conn = get_db()
-    conn.execute("DELETE FROM dynamic_items WHERE id=?", (item_id,))
+    _ensure_table_exists(conn, table_id)
+    items_table = get_items_table(table_id)
+
+    conn.execute(f"DELETE FROM {items_table} WHERE id = ?", (item_id,))
     conn.commit()
     conn.close()
     return {"ok": True}
 
 
-# ── Serve frontend ───────────────────────────────────────────────────────────
+# ── Serve frontend ────────────────────────────────────────────────────────────
 STATIC_DIR.mkdir(exist_ok=True)
 assets_dir = STATIC_DIR / "assets"
 if assets_dir.is_dir():
