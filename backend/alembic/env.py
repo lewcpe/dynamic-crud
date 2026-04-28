@@ -15,9 +15,8 @@ def get_url():
     url = config.get_main_option("sqlalchemy.url")
     if url and url != "driver://user:pass@localhost/dbname":
         return url
-    import main
-
-    return f"sqlite:///{main.DB_PATH}"
+    from app.database import DB_PATH
+    return f"sqlite:///{DB_PATH}"
 
 
 def run_migrations_offline() -> None:
