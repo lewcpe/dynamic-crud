@@ -109,18 +109,19 @@ def enrich_item_with_relationships(conn, table_id: int, item: dict) -> dict:
                 other_items = get_items_table(other_table)
                 col = f"rel_{rel_id}"
                 rows = conn.execute(
-                    f"SELECT id, owner FROM {other_items} WHERE {col} = ?",
+                    f"SELECT id FROM {other_items} WHERE {col} = ?",
                     (item["id"],),
                 ).fetchall()
+                items_list = []
+                for r in rows:
+                    label = get_item_label(conn, other_table, r["id"])
+                    items_list.append({"item_id": r["id"], "label": label})
                 relationships[rel_name] = {
                     "rel_id": rel_id,
                     "rel_type": rel_type,
                     "direction": "to",
                     "table_id": other_table,
-                    "items": [
-                        {"item_id": r["id"], "label": r["owner"] or str(r["id"])}
-                        for r in rows
-                    ],
+                    "items": items_list,
                 }
         elif rel_type == "n-n":
             junction = f"rel_{rel_id}"

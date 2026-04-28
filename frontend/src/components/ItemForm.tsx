@@ -35,6 +35,7 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
   const [owner, setOwner] = useState(user.name || user.email)
   const [values, setValues] = useState<Record<string, string>>({})
   const [relValues, setRelValues] = useState<Record<string, number | number[]>>({})
+  const [reverseRelValues, setReverseRelValues] = useState<Record<string, number[]>>({})
   const [systemItems, setSystemItems] = useState<Record<string, { id: number; label: string }[]>>({})
   const [tableItems, setTableItems] = useState<Record<number, { id: number; label: string }[]>>({})
   const [saving, setSaving] = useState(false)
@@ -42,6 +43,7 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
   const [systemUsers, setSystemUsers] = useState<{ id: number; label: string }[]>([])
 
   const fromRels = relationships.filter((r) => r.from_table_id === tableId)
+  const toRels = relationships.filter((r) => r.to_table_id === tableId && r.from_table_id !== tableId)
   const isAdmin = user.role === "admin"
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
       })
       setValues(init)
 
+      // Forward relationships
       const initRels: Record<string, number | number[]> = {}
       fromRels.forEach((r) => {
         const rv = item?.relationships?.[r.rel_name] as RelValue | undefined
@@ -71,6 +74,18 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
         }
       })
       setRelValues(initRels)
+
+      // Reverse relationships (from other tables pointing to this one)
+      const initReverse: Record<string, number[]> = {}
+      toRels.forEach((r) => {
+        const rv = item?.relationships?.[r.rel_name] as RelValue | undefined
+        if (rv && "items" in rv) {
+          initReverse[`to_${r.id}`] = rv.items.map((i) => i.item_id)
+        } else {
+          initReverse[`to_${r.id}`] = []
+        }
+      })
+      setReverseRelValues(initReverse)
       setError("")
     }
   }, [open, item, fields, relationships])
@@ -83,6 +98,7 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
 
   useEffect(() => {
     if (open) {
+      // Load items for forward relationships
       fromRels.forEach((r) => {
         if (r.to_system_table) {
           if (!systemItems[r.to_system_table]) {
@@ -93,24 +109,30 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
           }
         } else if (r.to_table_id && !tableItems[r.to_table_id]) {
           api.listItemOptions(r.to_table_id).then((options) => {
-            setTableItems((prev) => ({
-              ...prev,
-              [r.to_table_id!]: options,
-            }))
+            setTableItems((prev) => ({ ...prev, [r.to_table_id!]: options }))
+          })
+        }
+      })
+      // Load items for reverse relationships
+      toRels.forEach((r) => {
+        const sourceTableId = r.from_table_id
+        if (sourceTableId && !tableItems[sourceTableId]) {
+          api.listItemOptions(sourceTableId).then((options) => {
+            setTableItems((prev) => ({ ...prev, [sourceTableId!]: options }))
           })
         }
       })
     }
-  }, [open, fromRels])
+  }, [open, fromRels, toRels])
 
   const getRelOptions = (r: Relationship) => {
-    if (r.to_system_table) {
-      return systemItems[r.to_system_table] || []
-    }
-    if (r.to_table_id) {
-      return tableItems[r.to_table_id] || []
-    }
+    if (r.to_system_table) return systemItems[r.to_system_table] || []
+    if (r.to_table_id) return tableItems[r.to_table_id] || []
     return []
+  }
+
+  const getReverseRelOptions = (r: Relationship) => {
+    return tableItems[r.from_table_id] || []
   }
 
   const handleSubmit = async () => {
@@ -135,6 +157,7 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
       const itemId = savedItem?.id || item?.id
 
       if (itemId) {
+        // Save forward relationships
         for (const r of fromRels) {
           const val = relValues[r.rel_name]
           if (r.rel_type === "n-n") {
@@ -148,6 +171,17 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
               target_ids: [val],
             })
           }
+        }
+
+        // Save reverse relationships
+        for (const r of toRels) {
+          const val = reverseRelValues[`to_${r.id}`] || []
+          // For reverse 1-n: update FK on the source table's items
+          // For reverse n-n: update junction table
+          await api.setRelationshipLinks(tableId, r.id, {
+            item_id: itemId,
+            target_ids: val,
+          })
         }
       }
 
@@ -173,14 +207,10 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
             <Label htmlFor="owner">Owner</Label>
             {isAdmin ? (
               <Select value={owner} onValueChange={setOwner}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {systemUsers.map((u) => (
-                    <SelectItem key={u.id} value={u.label}>
-                      {u.label}
-                    </SelectItem>
+                    <SelectItem key={u.id} value={u.label}>{u.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -193,49 +223,24 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
             <div key={f.id} className="space-y-1.5">
               <Label htmlFor={f.field_name}>{f.field_label}</Label>
               {f.field_type === "text" && (
-                <Input
-                  id={f.field_name}
-                  value={values[f.field_name] || ""}
-                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
-                />
+                <Input id={f.field_name} value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
               {f.field_type === "int" && (
-                <Input
-                  id={f.field_name}
-                  type="number"
-                  step="1"
-                  value={values[f.field_name] || ""}
-                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
-                />
+                <Input id={f.field_name} type="number" step="1" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
               {f.field_type === "float" && (
-                <Input
-                  id={f.field_name}
-                  type="number"
-                  step="any"
-                  value={values[f.field_name] || ""}
-                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
-                />
+                <Input id={f.field_name} type="number" step="any" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
               {f.field_type === "date" && (
-                <Input
-                  id={f.field_name}
-                  type="date"
-                  value={values[f.field_name] || ""}
-                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
-                />
+                <Input id={f.field_name} type="date" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
               {f.field_type === "datetime" && (
-                <Input
-                  id={f.field_name}
-                  type="datetime-local"
-                  value={values[f.field_name] || ""}
-                  onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })}
-                />
+                <Input id={f.field_name} type="datetime-local" value={values[f.field_name] || ""} onChange={(e) => setValues({ ...values, [f.field_name]: e.target.value })} />
               )}
             </div>
           ))}
 
+          {/* Forward relationships */}
           {fromRels.length > 0 && (
             <div className="border-t pt-4 space-y-4">
               <h3 className="text-sm font-medium">Relationships</h3>
@@ -253,40 +258,64 @@ export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fiel
                               checked={Array.isArray(relValues[r.rel_name]) && (relValues[r.rel_name] as number[]).includes(opt.id)}
                               onChange={(e) => {
                                 const current = Array.isArray(relValues[r.rel_name]) ? [...(relValues[r.rel_name] as number[])] : []
-                                if (e.target.checked) {
-                                  current.push(opt.id)
-                                } else {
-                                  const idx = current.indexOf(opt.id)
-                                  if (idx >= 0) current.splice(idx, 1)
-                                }
+                                if (e.target.checked) current.push(opt.id)
+                                else { const idx = current.indexOf(opt.id); if (idx >= 0) current.splice(idx, 1) }
                                 setRelValues({ ...relValues, [r.rel_name]: current })
                               }}
                             />
                             {opt.label}
                           </label>
                         ))}
-                        {options.length === 0 && (
-                          <p className="text-xs text-muted-foreground">No items available</p>
-                        )}
+                        {options.length === 0 && <p className="text-xs text-muted-foreground">No items available</p>}
                       </div>
                     ) : (
-                      <Select
-                        value={relValues[r.rel_name] ? String(relValues[r.rel_name]) : "0"}
-                        onValueChange={(v) => setRelValues({ ...relValues, [r.rel_name]: Number(v) })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select..." />
-                        </SelectTrigger>
+                      <Select value={relValues[r.rel_name] ? String(relValues[r.rel_name]) : "0"} onValueChange={(v) => setRelValues({ ...relValues, [r.rel_name]: Number(v) })}>
+                        <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="0">None</SelectItem>
                           {options.map((opt) => (
-                            <SelectItem key={opt.id} value={String(opt.id)}>
-                              {opt.label}
-                            </SelectItem>
+                            <SelectItem key={opt.id} value={String(opt.id)}>{opt.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Reverse relationships (from other tables) */}
+          {toRels.length > 0 && (
+            <div className="border-t pt-4 space-y-4">
+              <h3 className="text-sm font-medium">Related From</h3>
+              {toRels.map((r) => {
+                const options = getReverseRelOptions(r)
+                const colKey = `to_${r.id}`
+                return (
+                  <div key={r.id} className="space-y-1.5">
+                    <Label className="text-muted-foreground">
+                      {r.from_label || r.rel_label || r.rel_name}
+                      <span className="text-xs ml-1">(from table)</span>
+                    </Label>
+                    <div className="space-y-1">
+                      {options.map((opt) => (
+                        <label key={opt.id} className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={(reverseRelValues[colKey] || []).includes(opt.id)}
+                            onChange={(e) => {
+                              const current = [...(reverseRelValues[colKey] || [])]
+                              if (e.target.checked) current.push(opt.id)
+                              else { const idx = current.indexOf(opt.id); if (idx >= 0) current.splice(idx, 1) }
+                              setReverseRelValues({ ...reverseRelValues, [colKey]: current })
+                            }}
+                          />
+                          {opt.label}
+                        </label>
+                      ))}
+                      {options.length === 0 && <p className="text-xs text-muted-foreground">No items available</p>}
+                    </div>
                   </div>
                 )
               })}
