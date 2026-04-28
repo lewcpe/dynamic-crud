@@ -11,7 +11,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { X, Plus, Settings } from "lucide-react"
+import { X, Plus, Settings, RefreshCw } from "lucide-react"
 
 interface Props {
   tables: Table[]
@@ -26,6 +26,7 @@ export default function TableManager({ tables, onChange }: Props) {
   const [editId, setEditId] = useState<number | null>(null)
   const [editRepresent, setEditRepresent] = useState("")
   const [error, setError] = useState("")
+  const [refreshing, setRefreshing] = useState<number | null>(null)
 
   const handleAdd = async () => {
     setError("")
@@ -67,6 +68,14 @@ export default function TableManager({ tables, onChange }: Props) {
     onChange()
   }
 
+  const handleRefreshRepresent = async (t: Table) => {
+    setRefreshing(t.id)
+    // Re-save the represent expression to trigger a refresh
+    await api.updateTable(t.id, { represent: t.represent || "" })
+    onChange()
+    setTimeout(() => setRefreshing(null), 500)
+  }
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -98,6 +107,15 @@ export default function TableManager({ tables, onChange }: Props) {
                       title="Edit represent expression"
                     >
                       <Settings className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={`h-7 w-7 ${refreshing === t.id ? "animate-spin" : ""}`}
+                      onClick={() => handleRefreshRepresent(t)}
+                      title="Refresh represent text"
+                    >
+                      <RefreshCw className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="ghost"
