@@ -123,6 +123,8 @@ export const api = {
     request(`/tables/${tableId}/my-permissions`) as Promise<Record<string, boolean>>,
 
   // items (table-scoped)
+  listItemOptions: (tableId: number) =>
+    request(`/tables/${tableId}/items/options`) as Promise<{ id: number; label: string }[]>,
   listItems: (tableId: number, params?: { page?: number; page_size?: number; search?: string; sort_by?: string; sort_dir?: string }) => {
     const sp = new URLSearchParams()
     if (params?.page) sp.set("page", String(params.page))

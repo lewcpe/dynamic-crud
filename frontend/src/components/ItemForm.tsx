@@ -78,13 +78,10 @@ export default function ItemForm({ open, onClose, onSave, tableId, fields, relat
             })
           }
         } else if (r.to_table_id && !tableItems[r.to_table_id]) {
-          api.listItems(r.to_table_id, { page_size: 100 }).then((data) => {
+          api.listItemOptions(r.to_table_id).then((options) => {
             setTableItems((prev) => ({
               ...prev,
-              [r.to_table_id!]: data.items.map((i: any) => ({
-                id: i.id,
-                label: i.represent_label || i.owner || `#${i.id}`,
-              })),
+              [r.to_table_id!]: options,
             }))
           })
         }

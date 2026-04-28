@@ -10,6 +10,25 @@ from ..helpers import item_row_to_dict, enrich_item_with_relationships
 router = APIRouter(prefix="/api/tables/{table_id}/items", tags=["items"])
 
 
+@router.get("/options")
+def list_item_options(table_id: int, user: dict | None = Depends(get_current_user_optional)):
+    """Get items as id+label options for relationship dropdowns."""
+    from ..helpers import get_item_label
+    conn = get_db()
+    ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "list", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized")
+    items_table = get_items_table(table_id)
+    rows = conn.execute(f"SELECT id FROM {items_table} ORDER BY id").fetchall()
+    options = []
+    for r in rows:
+        label = get_item_label(conn, table_id, r["id"])
+        options.append({"id": r["id"], "label": label})
+    conn.close()
+    return options
+
+
 @router.get("")
 def list_items(
     table_id: int,
