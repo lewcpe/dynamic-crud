@@ -1,21 +1,31 @@
 import sqlite3
 import json
+import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile, File as FastAPIFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, model_validator
+from passlib.context import CryptContext
+from jose import jwt, JWTError
+import bcrypt
 
 DB_PATH = Path(__file__).parent / "data.db"
 STATIC_DIR = Path(__file__).parent / "static"
-FIELD_TYPES = ["int", "float", "text", "date", "datetime"]
+FIELD_TYPES = ["int", "float", "text", "date", "datetime", "file", "files"]
 REL_TYPES = ["1-1", "1-n", "n-n"]
 RESERVED_FIELD_NAMES = ("id", "owner", "created_at", "updated_at", "data")
+
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = 24
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def get_db():
@@ -24,6 +34,14 @@ def get_db():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 def get_items_table(table_id: int) -> str:
@@ -151,6 +169,179 @@ def get_item_label(conn: sqlite3.Connection, table_id: int, item_id: int) -> str
         return row["owner"] or str(item_id)
     return str(item_id)
 
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict | None:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return None
+
+
+def get_user_by_id(conn: sqlite3.Connection, user_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_email(conn: sqlite3.Connection, email: str) -> dict | None:
+    row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_groups(conn: sqlite3.Connection, user_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT group_id FROM user_groups WHERE user_id = ?", (user_id,)
+    ).fetchall()
+    return [r["group_id"] for r in rows]
+
+
+def get_current_user_optional(request: Request) -> dict | None:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:]
+    payload = decode_token(token)
+    if not payload or "sub" not in payload:
+        return None
+    conn = get_db()
+    user = get_user_by_id(conn, int(payload["sub"]))
+    conn.close()
+    return user
+
+
+def get_current_user(request: Request) -> dict:
+    user = get_current_user_optional(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user
+
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admin access required")
+    return user
+
+
+def check_table_permission(
+    conn: sqlite3.Connection,
+    table_id: int,
+    action: str,
+    user: dict | None,
+    item: dict | None = None,
+) -> bool:
+    if user and user["role"] == "admin":
+        return True
+
+    perms = conn.execute(
+        "SELECT * FROM permissions WHERE table_id = ?", (table_id,)
+    ).fetchall()
+
+    if not perms:
+        return True
+
+    matched = False
+    for perm in perms:
+        if not _permission_applies(perm, user):
+            continue
+        matched = True
+        rule = perm[f"{action}_rule"]
+        if rule is None:
+            return False
+        if rule == "":
+            return True
+        if evaluate_rule(rule, user, item, conn):
+            return True
+
+    if not matched:
+        return True
+    return False
+
+
+def _permission_applies(perm: dict, user: dict | None) -> bool:
+    target_type = perm["target_type"]
+    if target_type == "role":
+        target_role = perm["target_role"]
+        if target_role == "user":
+            return user is not None
+        if target_role == "guest":
+            return user is None
+        return False
+    if target_type == "user":
+        if not user:
+            return False
+        return perm["target_id"] == user["id"]
+    if target_type == "group":
+        if not user:
+            return False
+        groups = get_user_groups_sqlite(user["id"])
+        return perm["target_id"] in groups
+    return False
+
+
+def get_user_groups_sqlite(user_id: int) -> list[int]:
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT group_id FROM user_groups WHERE user_id = ?", (user_id,)
+    ).fetchall()
+    conn.close()
+    return [r["group_id"] for r in rows]
+
+
+def evaluate_rule(
+    rule: str,
+    user: dict | None,
+    item: dict | None,
+    conn: sqlite3.Connection,
+) -> bool:
+    if not rule or not rule.strip():
+        return True
+
+    rule = rule.strip()
+
+    if rule == "@request.auth.id != \"\"":
+        return user is not None
+
+    if rule.startswith("@request.auth.id"):
+        if "!=" in rule:
+            return user is not None
+        if "=" in rule and "!=" not in rule:
+            return user is not None
+
+    if ".id ?= @request.auth.id" in rule:
+        if not user or not item:
+            return False
+        field_part = rule.split(".id ?=")[0].strip()
+        rel_val = item.get("relationships", {}).get(field_part)
+        if not rel_val:
+            return False
+        if "items" in rel_val:
+            return any(i["item_id"] == user["id"] for i in rel_val["items"])
+        if "item_id" in rel_val:
+            return rel_val["item_id"] == user["id"]
+        return False
+
+    return False
+
+
+def get_user_permissions(
+    conn: sqlite3.Connection, table_id: int, user: dict | None
+) -> dict:
+    actions = ["list", "view", "create", "update", "delete"]
+    result = {}
+    for action in actions:
+        result[action] = check_table_permission(conn, table_id, action, user)
+    return result
+
+
+# ── Enrich items ──────────────────────────────────────────────────────────────
 
 def enrich_item_with_relationships(
     conn: sqlite3.Connection, table_id: int, item: dict
@@ -775,9 +966,13 @@ def list_items(
     search: str | None = None,
     sort_by: str | None = None,
     sort_dir: str = "asc",
+    user: dict | None = Depends(get_current_user_optional),
 ):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "list", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized to list items")
     fields = get_fields(conn, table_id)
     field_names = [f["field_name"] for f in fields]
     items_table = get_items_table(table_id)
@@ -821,9 +1016,12 @@ def list_items(
 
 
 @app.get("/api/tables/{table_id}/items/{item_id}")
-def get_item(table_id: int, item_id: int):
+def get_item(table_id: int, item_id: int, user: dict | None = Depends(get_current_user_optional)):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "view", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized to view items")
     fields = get_fields(conn, table_id)
     items_table = get_items_table(table_id)
 
@@ -840,9 +1038,12 @@ def get_item(table_id: int, item_id: int):
 
 
 @app.post("/api/tables/{table_id}/items", status_code=201)
-def create_item(table_id: int, payload: ItemCreate):
+def create_item(table_id: int, payload: ItemCreate, user: dict | None = Depends(get_current_user_optional)):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "create", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized to create items")
     fields = get_fields(conn, table_id)
     validated = validate_item_data(fields, payload.data)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -874,9 +1075,12 @@ def create_item(table_id: int, payload: ItemCreate):
 
 
 @app.put("/api/tables/{table_id}/items/{item_id}")
-def update_item(table_id: int, item_id: int, payload: ItemUpdate):
+def update_item(table_id: int, item_id: int, payload: ItemUpdate, user: dict | None = Depends(get_current_user_optional)):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "update", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized to update items")
     fields = get_fields(conn, table_id)
     items_table = get_items_table(table_id)
 
@@ -925,12 +1129,559 @@ def update_item(table_id: int, item_id: int, payload: ItemUpdate):
 
 
 @app.delete("/api/tables/{table_id}/items/{item_id}")
-def delete_item(table_id: int, item_id: int):
+def delete_item(table_id: int, item_id: int, user: dict | None = Depends(get_current_user_optional)):
     conn = get_db()
     _ensure_table_exists(conn, table_id)
+    if not check_table_permission(conn, table_id, "delete", user):
+        conn.close()
+        raise HTTPException(403, "Not authorized to delete items")
     items_table = get_items_table(table_id)
 
     conn.execute(f"DELETE FROM {items_table} WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Serve frontend ────────────────────────────────────────────────────────────
+
+
+# ── Auth & User management ────────────────────────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    role: str | None = None
+
+    @model_validator(mode="after")
+    def check_role(self):
+        if self.role is not None and self.role not in ("admin", "user"):
+            raise ValueError("role must be 'admin' or 'user'")
+        return self
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+@app.post("/api/auth/register", status_code=201)
+def register(payload: RegisterRequest):
+    conn = get_db()
+    existing = get_user_by_email(conn, payload.email)
+    if existing:
+        conn.close()
+        raise HTTPException(400, "Email already registered")
+
+    user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    role = "admin" if user_count == 0 else "user"
+
+    conn.execute(
+        "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)",
+        (payload.email, hash_password(payload.password), payload.name or payload.email.split("@")[0], role),
+    )
+    user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    user = get_user_by_id(conn, user_id)
+    conn.close()
+
+    token = create_access_token({"sub": str(user_id)})
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest):
+    conn = get_db()
+    user = get_user_by_email(conn, payload.email)
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        conn.close()
+        raise HTTPException(401, "Invalid email or password")
+    conn.close()
+
+    token = create_access_token({"sub": str(user["id"])})
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.get("/api/auth/me")
+def get_me(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    groups = conn.execute(
+        "SELECT g.* FROM groups g JOIN user_groups ug ON g.id = ug.group_id WHERE ug.user_id = ?",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    user["groups"] = [dict(g) for g in groups]
+    return user
+
+
+@app.get("/api/users")
+def list_users(admin: dict = Depends(require_admin)):
+    conn = get_db()
+    users = conn.execute("SELECT id, email, name, role, created_at FROM users ORDER BY id").fetchall()
+    conn.close()
+    return [dict(u) for u in users]
+
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: int, payload: UserUpdate, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+
+    if payload.name is not None:
+        conn.execute("UPDATE users SET name = ? WHERE id = ?", (payload.name, user_id))
+    if payload.role is not None:
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (payload.role, user_id))
+    conn.commit()
+    user = get_user_by_id(conn, user_id)
+    conn.close()
+    return user
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/make-admin")
+def make_admin(user_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/users/{user_id}/remove-admin")
+def remove_admin(user_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    if user["role"] == "admin":
+        admin_count = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+        if admin_count <= 1:
+            conn.close()
+            raise HTTPException(400, "Cannot remove the last admin")
+    conn.execute("UPDATE users SET role = 'user' WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Group management ──────────────────────────────────────────────────────────
+
+class GroupCreate(BaseModel):
+    name: str
+    description: str = ""
+
+
+class GroupUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class GroupMemberAction(BaseModel):
+    user_id: int
+
+
+@app.get("/api/groups")
+def list_groups(admin: dict = Depends(require_admin)):
+    conn = get_db()
+    groups = conn.execute("SELECT * FROM groups ORDER BY id").fetchall()
+    conn.close()
+    return [dict(g) for g in groups]
+
+
+@app.post("/api/groups", status_code=201)
+def create_group(payload: GroupCreate, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM groups WHERE name = ?", (payload.name,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(400, f"Group '{payload.name}' already exists")
+    conn.execute(
+        "INSERT INTO groups (name, description) VALUES (?, ?)",
+        (payload.name, payload.description),
+    )
+    group_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    group = dict(conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone())
+    conn.close()
+    return group
+
+
+@app.put("/api/groups/{group_id}")
+def update_group(group_id: int, payload: GroupUpdate, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    group = conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+    if not group:
+        conn.close()
+        raise HTTPException(404, "Group not found")
+    if payload.name is not None:
+        conn.execute("UPDATE groups SET name = ? WHERE id = ?", (payload.name, group_id))
+    if payload.description is not None:
+        conn.execute("UPDATE groups SET description = ? WHERE id = ?", (payload.description, group_id))
+    conn.commit()
+    group = dict(conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone())
+    conn.close()
+    return group
+
+
+@app.delete("/api/groups/{group_id}")
+def delete_group(group_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    group = conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+    if not group:
+        conn.close()
+        raise HTTPException(404, "Group not found")
+    conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/groups/{group_id}/members")
+def list_group_members(group_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    members = conn.execute(
+        "SELECT u.id, u.email, u.name, u.role FROM users u "
+        "JOIN user_groups ug ON u.id = ug.user_id WHERE ug.group_id = ?",
+        (group_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(m) for m in members]
+
+
+@app.post("/api/groups/{group_id}/members", status_code=201)
+def add_group_member(group_id: int, payload: GroupMemberAction, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    group = conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+    if not group:
+        conn.close()
+        raise HTTPException(404, "Group not found")
+    user = get_user_by_id(conn, payload.user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    try:
+        conn.execute("INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)", (payload.user_id, group_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{group_id}/members/{user_id}")
+def remove_group_member(group_id: int, user_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    conn.execute("DELETE FROM user_groups WHERE user_id = ? AND group_id = ?", (user_id, group_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Permission management ─────────────────────────────────────────────────────
+
+class PermissionCreate(BaseModel):
+    target_type: str
+    target_id: int | None = None
+    target_role: str | None = None
+    list_rule: str | None = None
+    view_rule: str | None = None
+    create_rule: str | None = None
+    update_rule: str | None = None
+    delete_rule: str | None = None
+
+    @model_validator(mode="after")
+    def check_target(self):
+        if self.target_type not in ("user", "group", "role"):
+            raise ValueError("target_type must be 'user', 'group', or 'role'")
+        return self
+
+
+class PermissionUpdate(BaseModel):
+    list_rule: str | None = None
+    view_rule: str | None = None
+    create_rule: str | None = None
+    update_rule: str | None = None
+    delete_rule: str | None = None
+
+
+@app.get("/api/tables/{table_id}/permissions")
+def list_permissions(table_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    perms = conn.execute(
+        "SELECT * FROM permissions WHERE table_id = ?", (table_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(p) for p in perms]
+
+
+@app.post("/api/tables/{table_id}/permissions", status_code=201)
+def create_permission(table_id: int, payload: PermissionCreate, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+
+    conn.execute(
+        "INSERT INTO permissions (table_id, target_type, target_id, target_role, "
+        "list_rule, view_rule, create_rule, update_rule, delete_rule) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (table_id, payload.target_type, payload.target_id, payload.target_role,
+         payload.list_rule, payload.view_rule, payload.create_rule,
+         payload.update_rule, payload.delete_rule),
+    )
+    perm_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    perm = dict(conn.execute("SELECT * FROM permissions WHERE id = ?", (perm_id,)).fetchone())
+    conn.close()
+    return perm
+
+
+@app.put("/api/tables/{table_id}/permissions/{perm_id}")
+def update_permission(table_id: int, perm_id: int, payload: PermissionUpdate, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    perm = conn.execute(
+        "SELECT * FROM permissions WHERE id = ? AND table_id = ?", (perm_id, table_id)
+    ).fetchone()
+    if not perm:
+        conn.close()
+        raise HTTPException(404, "Permission not found")
+
+    for field in ("list_rule", "view_rule", "create_rule", "update_rule", "delete_rule"):
+        val = getattr(payload, field)
+        if val is not None:
+            conn.execute(f"UPDATE permissions SET {field} = ? WHERE id = ?", (val, perm_id))
+    conn.commit()
+    perm = dict(conn.execute("SELECT * FROM permissions WHERE id = ?", (perm_id,)).fetchone())
+    conn.close()
+    return perm
+
+
+@app.delete("/api/tables/{table_id}/permissions/{perm_id}")
+def delete_permission(table_id: int, perm_id: int, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    perm = conn.execute(
+        "SELECT * FROM permissions WHERE id = ? AND table_id = ?", (perm_id, table_id)
+    ).fetchone()
+    if not perm:
+        conn.close()
+        raise HTTPException(404, "Permission not found")
+    conn.execute("DELETE FROM permissions WHERE id = ?", (perm_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/tables/{table_id}/my-permissions")
+def get_my_permissions(table_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    perms = get_user_permissions(conn, table_id, user)
+    conn.close()
+    return perms
+
+
+# ── File management ───────────────────────────────────────────────────────────
+
+@app.post("/api/tables/{table_id}/items/{item_id}/files", status_code=201)
+def upload_file(
+    table_id: int,
+    item_id: int,
+    file: UploadFile = FastAPIFile(...),
+    field_name: str = Form(""),
+    user: dict = Depends(get_current_user),
+):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    items_table = get_items_table(table_id)
+    row = conn.execute(f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Item not found")
+
+    check_table_permission(conn, table_id, "update", user, dict(row))
+
+    data = file.file.read()
+    conn.execute(
+        "INSERT INTO files (table_id, item_id, field_name, filename, mime_type, size, data, uploader_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (table_id, item_id, field_name, file.filename, file.content_type or "application/octet-stream",
+         len(data), data, user["id"]),
+    )
+    file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    f = dict(conn.execute(
+        "SELECT id, table_id, item_id, field_name, filename, mime_type, size, uploader_id, created_at FROM files WHERE id = ?",
+        (file_id,),
+    ).fetchone())
+    conn.close()
+    return f
+
+
+@app.get("/api/tables/{table_id}/items/{item_id}/files")
+def list_files(table_id: int, item_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    check_table_permission(conn, table_id, "view", user)
+    files = conn.execute(
+        "SELECT id, table_id, item_id, field_name, filename, mime_type, size, uploader_id, created_at "
+        "FROM files WHERE table_id = ? AND item_id = ?",
+        (table_id, item_id),
+    ).fetchall()
+    conn.close()
+    return [dict(f) for f in files]
+
+
+@app.get("/api/files/{file_id}")
+def download_file(file_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    f = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not f:
+        conn.close()
+        raise HTTPException(404, "File not found")
+    check_table_permission(conn, f["table_id"], "view", user)
+    conn.close()
+    return Response(
+        content=f["data"],
+        media_type=f["mime_type"],
+        headers={"Content-Disposition": f'attachment; filename="{f["filename"]}"'},
+    )
+
+
+@app.delete("/api/files/{file_id}")
+def delete_file(file_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    f = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not f:
+        conn.close()
+        raise HTTPException(404, "File not found")
+    check_table_permission(conn, f["table_id"], "update", user)
+    conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+
+class CommentCreate(BaseModel):
+    content: str
+
+
+class CommentUpdate(BaseModel):
+    content: str
+
+
+@app.get("/api/tables/{table_id}/items/{item_id}/comments")
+def list_comments(table_id: int, item_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    check_table_permission(conn, table_id, "view", user)
+    comments = conn.execute(
+        "SELECT c.*, u.name as user_name, u.email as user_email FROM comments c "
+        "JOIN users u ON c.user_id = u.id "
+        "WHERE c.table_id = ? AND c.item_id = ? ORDER BY c.created_at",
+        (table_id, item_id),
+    ).fetchall()
+    conn.close()
+    return [dict(c) for c in comments]
+
+
+@app.post("/api/tables/{table_id}/items/{item_id}/comments", status_code=201)
+def create_comment(
+    table_id: int, item_id: int, payload: CommentCreate, user: dict = Depends(get_current_user)
+):
+    conn = get_db()
+    _ensure_table_exists(conn, table_id)
+    items_table = get_items_table(table_id)
+    row = conn.execute(f"SELECT * FROM {items_table} WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Item not found")
+
+    if not check_table_permission(conn, table_id, "update", user, dict(row)):
+        conn.close()
+        raise HTTPException(403, "Not authorized to comment on this item")
+
+    conn.execute(
+        "INSERT INTO comments (table_id, item_id, user_id, content) VALUES (?, ?, ?, ?)",
+        (table_id, item_id, user["id"], payload.content),
+    )
+    comment_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    comment = dict(conn.execute(
+        "SELECT c.*, u.name as user_name, u.email as user_email FROM comments c "
+        "JOIN users u ON c.user_id = u.id WHERE c.id = ?", (comment_id,)
+    ).fetchone())
+    conn.close()
+    return comment
+
+
+@app.put("/api/comments/{comment_id}")
+def update_comment(comment_id: int, payload: CommentUpdate, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    comment = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
+    if not comment:
+        conn.close()
+        raise HTTPException(404, "Comment not found")
+    if comment["user_id"] != user["id"] and user["role"] != "admin":
+        conn.close()
+        raise HTTPException(403, "Can only edit your own comments")
+    conn.execute(
+        "UPDATE comments SET content = ?, updated_at = datetime('now') WHERE id = ?",
+        (payload.content, comment_id),
+    )
+    conn.commit()
+    comment = dict(conn.execute(
+        "SELECT c.*, u.name as user_name, u.email as user_email FROM comments c "
+        "JOIN users u ON c.user_id = u.id WHERE c.id = ?", (comment_id,)
+    ).fetchone())
+    conn.close()
+    return comment
+
+
+@app.delete("/api/comments/{comment_id}")
+def delete_comment(comment_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    comment = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
+    if not comment:
+        conn.close()
+        raise HTTPException(404, "Comment not found")
+    if comment["user_id"] != user["id"] and user["role"] != "admin":
+        conn.close()
+        raise HTTPException(403, "Can only delete your own comments")
+    conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
     conn.commit()
     conn.close()
     return {"ok": True}

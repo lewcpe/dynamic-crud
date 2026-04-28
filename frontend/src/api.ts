@@ -1,12 +1,33 @@
-import type { Table, Field, Relationship, Item, PaginatedItems } from "./types"
+import type {
+  Table, Field, Relationship, Item, PaginatedItems,
+  User, Group, Permission, FileAttachment, Comment,
+} from "./types"
 
 const BASE = "/api"
 
+function getToken(): string | null {
+  return localStorage.getItem("token")
+}
+
 async function request(path: string, options?: RequestInit) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  })
+  const token = getToken()
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
+  const res = await fetch(`${BASE}${path}`, { headers, ...options })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || "Request failed")
+  }
+  return res.json()
+}
+
+async function upload(path: string, formData: FormData) {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: formData })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || "Request failed")
@@ -15,6 +36,34 @@ async function request(path: string, options?: RequestInit) {
 }
 
 export const api = {
+  // auth
+  register: (data: { email: string; password: string; name?: string }) =>
+    request("/auth/register", { method: "POST", body: JSON.stringify(data) }) as Promise<{ access_token: string; user: User }>,
+  login: (data: { email: string; password: string }) =>
+    request("/auth/login", { method: "POST", body: JSON.stringify(data) }) as Promise<{ access_token: string; user: User }>,
+  getMe: () => request("/auth/me") as Promise<User>,
+
+  // users (admin)
+  listUsers: () => request("/users") as Promise<User[]>,
+  updateUser: (id: number, data: { name?: string; role?: string }) =>
+    request(`/users/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<User>,
+  deleteUser: (id: number) => request(`/users/${id}`, { method: "DELETE" }),
+  makeAdmin: (id: number) => request(`/users/${id}/make-admin`, { method: "POST" }),
+  removeAdmin: (id: number) => request(`/users/${id}/remove-admin`, { method: "POST" }),
+
+  // groups (admin)
+  listGroups: () => request("/groups") as Promise<Group[]>,
+  createGroup: (data: { name: string; description?: string }) =>
+    request("/groups", { method: "POST", body: JSON.stringify(data) }) as Promise<Group>,
+  updateGroup: (id: number, data: { name?: string; description?: string }) =>
+    request(`/groups/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<Group>,
+  deleteGroup: (id: number) => request(`/groups/${id}`, { method: "DELETE" }),
+  listGroupMembers: (id: number) => request(`/groups/${id}/members`) as Promise<User[]>,
+  addGroupMember: (id: number, userId: number) =>
+    request(`/groups/${id}/members`, { method: "POST", body: JSON.stringify({ user_id: userId }) }),
+  removeGroupMember: (id: number, userId: number) =>
+    request(`/groups/${id}/members/${userId}`, { method: "DELETE" }),
+
   // tables
   listTables: () => request("/tables") as Promise<Table[]>,
   createTable: (data: { name: string; label?: string }) =>
@@ -50,6 +99,25 @@ export const api = {
   setRelationshipLinks: (tableId: number, relId: number, data: { item_id: number; target_ids: number[] }) =>
     request(`/tables/${tableId}/relationships/${relId}/link`, { method: "POST", body: JSON.stringify(data) }),
 
+  // permissions (table-scoped, admin)
+  listPermissions: (tableId: number) =>
+    request(`/tables/${tableId}/permissions`) as Promise<Permission[]>,
+  createPermission: (tableId: number, data: {
+    target_type: string; target_id?: number; target_role?: string;
+    list_rule?: string | null; view_rule?: string | null;
+    create_rule?: string | null; update_rule?: string | null; delete_rule?: string | null;
+  }) =>
+    request(`/tables/${tableId}/permissions`, { method: "POST", body: JSON.stringify(data) }) as Promise<Permission>,
+  updatePermission: (tableId: number, id: number, data: {
+    list_rule?: string | null; view_rule?: string | null;
+    create_rule?: string | null; update_rule?: string | null; delete_rule?: string | null;
+  }) =>
+    request(`/tables/${tableId}/permissions/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<Permission>,
+  deletePermission: (tableId: number, id: number) =>
+    request(`/tables/${tableId}/permissions/${id}`, { method: "DELETE" }),
+  getMyPermissions: (tableId: number) =>
+    request(`/tables/${tableId}/my-permissions`) as Promise<Record<string, boolean>>,
+
   // items (table-scoped)
   listItems: (tableId: number, params?: { page?: number; page_size?: number; search?: string; sort_by?: string; sort_dir?: string }) => {
     const sp = new URLSearchParams()
@@ -69,4 +137,30 @@ export const api = {
     request(`/tables/${tableId}/items/${id}`, { method: "PUT", body: JSON.stringify(data) }) as Promise<Item>,
   deleteItem: (tableId: number, id: number) =>
     request(`/tables/${tableId}/items/${id}`, { method: "DELETE" }),
+
+  // files
+  uploadFile: (tableId: number, itemId: number, file: File, fieldName?: string) => {
+    const fd = new FormData()
+    fd.append("file", file)
+    if (fieldName) fd.append("field_name", fieldName)
+    return upload(`/tables/${tableId}/items/${itemId}/files`, fd) as Promise<FileAttachment>
+  },
+  listFiles: (tableId: number, itemId: number) =>
+    request(`/tables/${tableId}/items/${itemId}/files`) as Promise<FileAttachment[]>,
+  downloadFile: (fileId: number) => {
+    const token = getToken()
+    return fetch(`${BASE}/files/${fileId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  },
+  deleteFile: (fileId: number) => request(`/files/${fileId}`, { method: "DELETE" }),
+
+  // comments
+  listComments: (tableId: number, itemId: number) =>
+    request(`/tables/${tableId}/items/${itemId}/comments`) as Promise<Comment[]>,
+  createComment: (tableId: number, itemId: number, content: string) =>
+    request(`/tables/${tableId}/items/${itemId}/comments`, { method: "POST", body: JSON.stringify({ content }) }) as Promise<Comment>,
+  updateComment: (commentId: number, content: string) =>
+    request(`/comments/${commentId}`, { method: "PUT", body: JSON.stringify({ content }) }) as Promise<Comment>,
+  deleteComment: (commentId: number) => request(`/comments/${commentId}`, { method: "DELETE" }),
 }
