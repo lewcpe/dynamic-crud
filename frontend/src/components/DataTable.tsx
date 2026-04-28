@@ -102,12 +102,13 @@ export default function DataTable({
   }
 
   const handleSave = async (owner: string, data: Record<string, any>) => {
+    let result: Item
     if (editingItem) {
-      await api.updateItem(tableId, editingItem.id, { owner, data })
+      result = await api.updateItem(tableId, editingItem.id, { owner, data })
     } else {
-      await api.createItem(tableId, { owner, data })
+      result = await api.createItem(tableId, { owner, data })
     }
-    onDataChange()
+    return result
   }
 
   const SortIcon = ({ field }: { field: string }) => {
@@ -318,6 +319,7 @@ export default function DataTable({
         open={formOpen}
         onClose={() => setFormOpen(false)}
         onSave={handleSave}
+        onSaved={onDataChange}
         tableId={tableId}
         fields={fields}
         relationships={relationships}

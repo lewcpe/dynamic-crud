@@ -16,7 +16,7 @@ beforeEach(() => {
 
 describe("ItemForm", () => {
   it("renders form with dynamic fields", () => {
-    render(<ItemForm open={true} onClose={() => {}} onSave={async () => {}} tableId={1} fields={fields} relationships={[]} item={null} />)
+    render(<ItemForm open={true} onClose={() => {}} onSave={async () => ({ id: 1, owner: "", created_at: "", updated_at: "", fields: {} })} onSaved={() => {}} tableId={1} fields={fields} relationships={[]} item={null} />)
     expect(screen.getByText("Create Item")).toBeInTheDocument()
     expect(screen.getByLabelText("Owner")).toBeInTheDocument()
     expect(screen.getByLabelText("Name")).toBeInTheDocument()
@@ -24,8 +24,9 @@ describe("ItemForm", () => {
   })
 
   it("submits create with field values", async () => {
-    const onSave = vi.fn().mockResolvedValue(undefined)
-    render(<ItemForm open={true} onClose={() => {}} onSave={onSave} tableId={1} fields={fields} relationships={[]} item={null} />)
+    const onSave = vi.fn().mockResolvedValue({ id: 1, owner: "", created_at: "", updated_at: "", fields: {} })
+    const onSaved = vi.fn()
+    render(<ItemForm open={true} onClose={() => {}} onSave={onSave} onSaved={onSaved} tableId={1} fields={fields} relationships={[]} item={null} />)
 
     const ownerInput = screen.getByLabelText("Owner")
     await userEvent.clear(ownerInput)
@@ -36,6 +37,7 @@ describe("ItemForm", () => {
 
     await waitFor(() => {
       expect(onSave).toHaveBeenCalledWith("alice", { name: "Alice", age: 30 })
+      expect(onSaved).toHaveBeenCalled()
     })
   })
 })

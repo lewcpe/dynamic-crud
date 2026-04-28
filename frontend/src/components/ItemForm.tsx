@@ -22,14 +22,15 @@ import {
 interface Props {
   open: boolean
   onClose: () => void
-  onSave: (owner: string, data: Record<string, any>) => Promise<void>
+  onSave: (owner: string, data: Record<string, any>) => Promise<Item>
+  onSaved: () => void
   tableId: number
   fields: Field[]
   relationships: Relationship[]
   item?: Item | null
 }
 
-export default function ItemForm({ open, onClose, onSave, tableId, fields, relationships, item }: Props) {
+export default function ItemForm({ open, onClose, onSave, onSaved, tableId, fields, relationships, item }: Props) {
   const [owner, setOwner] = useState("default")
   const [values, setValues] = useState<Record<string, string>>({})
   const [relValues, setRelValues] = useState<Record<string, number | number[]>>({})
@@ -116,22 +117,28 @@ export default function ItemForm({ open, onClose, onSave, tableId, fields, relat
           data[f.field_name] = val
         }
       })
-      await onSave(owner, data)
 
-      for (const r of fromRels) {
-        const val = relValues[r.rel_name]
-        if (r.rel_type === "n-n") {
-          await api.setRelationshipLinks(tableId, r.id, {
-            item_id: item?.id || 0,
-            target_ids: Array.isArray(val) ? val : [],
-          })
-        } else if (val && typeof val === "number" && val > 0 && item?.id) {
-          await api.setRelationshipLinks(tableId, r.id, {
-            item_id: item.id,
-            target_ids: [val],
-          })
+      const savedItem = await onSave(owner, data)
+      const itemId = savedItem?.id || item?.id
+
+      if (itemId) {
+        for (const r of fromRels) {
+          const val = relValues[r.rel_name]
+          if (r.rel_type === "n-n") {
+            await api.setRelationshipLinks(tableId, r.id, {
+              item_id: itemId,
+              target_ids: Array.isArray(val) ? val : [],
+            })
+          } else if (val && typeof val === "number" && val > 0) {
+            await api.setRelationshipLinks(tableId, r.id, {
+              item_id: itemId,
+              target_ids: [val],
+            })
+          }
         }
       }
+
+      onSaved()
       onClose()
     } catch (e: any) {
       setError(e.message)
@@ -230,10 +237,13 @@ export default function ItemForm({ open, onClose, onSave, tableId, fields, relat
                             {opt.label}
                           </label>
                         ))}
+                        {options.length === 0 && (
+                          <p className="text-xs text-muted-foreground">No items available</p>
+                        )}
                       </div>
                     ) : (
                       <Select
-                        value={relValues[r.rel_name] ? String(relValues[r.rel_name]) : ""}
+                        value={relValues[r.rel_name] ? String(relValues[r.rel_name]) : "0"}
                         onValueChange={(v) => setRelValues({ ...relValues, [r.rel_name]: Number(v) })}
                       >
                         <SelectTrigger>
