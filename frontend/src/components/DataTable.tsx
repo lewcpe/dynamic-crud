@@ -253,6 +253,25 @@ export default function DataTable({
                     {f.field_label}
                   </label>
                 ))}
+                <div className="border-t pt-2 mt-2">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">System</p>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={!hiddenCols.has("created_at")}
+                      onChange={() => toggleCol("created_at")}
+                    />
+                    Created
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={!hiddenCols.has("updated_at")}
+                      onChange={() => toggleCol("updated_at")}
+                    />
+                    Updated
+                  </label>
+                </div>
                 {fromRels.length > 0 && (
                   <div className="border-t pt-2 mt-2">
                     <p className="text-xs font-medium text-muted-foreground mb-1">Relationships</p>
