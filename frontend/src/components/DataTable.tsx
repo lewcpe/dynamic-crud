@@ -141,9 +141,41 @@ export default function DataTable({
     return "-"
   }
 
+  // Forward relationships (from current table)
   const fromRels = relationships.filter((r) => r.from_table_id === tableId)
+  // Reverse relationships (to current table)
+  const toRels = relationships.filter((r) => r.to_table_id === tableId && r.from_table_id !== tableId)
+
+  const getTableName = (id: number | null) => {
+    if (!id) return ""
+    const t = tables.find((t) => t.id === id)
+    return t?.label || t?.name || ""
+  }
+
+  // Build reverse relationship display info
+  const reverseRels = toRels.map((r) => ({
+    ...r,
+    colKey: `to_${r.id}`,
+    displayLabel: r.to_label || `${getTableName(r.from_table_id)} (${r.rel_label || r.rel_name})`,
+  }))
+
   const visibleFields = fields.filter((f) => !hiddenCols.has(f.field_name))
   const visibleRels = fromRels.filter((r) => !hiddenCols.has(r.rel_name))
+  const visibleReverseRels = reverseRels.filter((r) => !hiddenCols.has(r.colKey))
+
+  const renderReverseRelValue = (rel: typeof reverseRels[0], item: Item) => {
+    const rv = item.relationships?.[rel.rel_name] as RelValue | undefined
+    if (!rv) return "-"
+
+    if ("items" in rv) {
+      if (rv.items.length === 0) return "-"
+      return rv.items.map((i) => i.label || `#${i.item_id}`).join(", ")
+    }
+    if ("item_id" in rv) {
+      return rv.label || (rv.item_id != null ? `#${rv.item_id}` : "-")
+    }
+    return "-"
+  }
 
   return (
     <div className="space-y-4">
@@ -192,16 +224,36 @@ export default function DataTable({
                     {f.field_label}
                   </label>
                 ))}
-                {fromRels.map((r) => (
-                  <label key={r.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={!hiddenCols.has(r.rel_name)}
-                      onChange={() => toggleCol(r.rel_name)}
-                    />
-                    {r.rel_label || r.rel_name}
-                  </label>
-                ))}
+                {fromRels.length > 0 && (
+                  <div className="border-t pt-2 mt-2">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Relationships</p>
+                    {fromRels.map((r) => (
+                      <label key={r.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={!hiddenCols.has(r.rel_name)}
+                          onChange={() => toggleCol(r.rel_name)}
+                        />
+                        {r.rel_label || r.rel_name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {reverseRels.length > 0 && (
+                  <div className="border-t pt-2 mt-2">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Related From</p>
+                    {reverseRels.map((r) => (
+                      <label key={r.colKey} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={!hiddenCols.has(r.colKey)}
+                          onChange={() => toggleCol(r.colKey)}
+                        />
+                        {r.displayLabel}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             </DialogContent>
           </Dialog>
@@ -238,6 +290,12 @@ export default function DataTable({
                   {r.rel_label || r.rel_name}
                 </TableHead>
               ))}
+              {visibleReverseRels.map((r) => (
+                <TableHead key={r.colKey} className="select-none text-muted-foreground">
+                  <Link2 className="h-3 w-3 inline mr-1 opacity-30" />
+                  {r.displayLabel}
+                </TableHead>
+              ))}
               {!hiddenCols.has("created_at") && (
                 <TableHead className="cursor-pointer select-none" onClick={() => handleSort("created_at")}>
                   Created <SortIcon field="created_at" />
@@ -255,7 +313,7 @@ export default function DataTable({
             {items.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={3 + visibleFields.length + visibleRels.length}
+                  colSpan={3 + visibleFields.length + visibleRels.length + visibleReverseRels.length}
                   className="text-center h-24 text-muted-foreground"
                 >
                   No items found.
@@ -278,6 +336,11 @@ export default function DataTable({
                   {visibleRels.map((r) => (
                     <TableCell key={r.id} className="text-sm">
                       {renderRelValue(r, item)}
+                    </TableCell>
+                  ))}
+                  {visibleReverseRels.map((r) => (
+                    <TableCell key={r.colKey} className="text-sm text-muted-foreground">
+                      {renderReverseRelValue(r, item)}
                     </TableCell>
                   ))}
                   {!hiddenCols.has("created_at") && (
