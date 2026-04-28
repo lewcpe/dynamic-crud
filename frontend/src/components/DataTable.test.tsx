@@ -12,7 +12,7 @@ const items: Item[] = [
   { id: 2, owner: "bob", created_at: "2024-01-02", updated_at: "2024-01-02", fields: { name: "Bob" } },
 ]
 
-const user: User = { id: 1, email: "admin@test.com", name: "Admin", role: "admin", created_at: "" }
+const user: User = { id: 1, email: "admin@test.com", name: "Admin", role: "admin", manager_id: null, created_at: "" }
 
 describe("DataTable", () => {
   it("renders table columns from fields", () => {

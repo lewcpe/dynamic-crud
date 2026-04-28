@@ -121,6 +121,10 @@ class GroupMemberAction(BaseModel):
     user_id: int
 
 
+class SetManager(BaseModel):
+    manager_id: int | None = None
+
+
 class PermissionCreate(BaseModel):
     target_type: str
     target_id: int | None = None

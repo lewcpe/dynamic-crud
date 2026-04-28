@@ -71,6 +71,7 @@ export interface User {
   email: string
   name: string
   role: "admin" | "user"
+  manager_id: number | null
   created_at: string
   groups?: Group[]
 }

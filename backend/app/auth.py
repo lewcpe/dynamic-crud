@@ -49,6 +49,38 @@ def get_user_groups(conn, user_id: int) -> list[int]:
     return [r["group_id"] for r in rows]
 
 
+def get_manager_chain(conn, user_id: int, levels: int = 0) -> list[int]:
+    """Get manager chain for a user.
+    
+    Args:
+        conn: database connection
+        user_id: the user to get managers for
+        levels: 0 = all levels (recursive), 1 = direct manager only, 2 = two levels, etc.
+    
+    Returns:
+        List of manager user IDs (from direct manager up to top)
+    """
+    chain = []
+    current_id = user_id
+    depth = 0
+    while True:
+        if levels > 0 and depth >= levels:
+            break
+        row = conn.execute(
+            "SELECT manager_id FROM users WHERE id = ?", (current_id,)
+        ).fetchone()
+        if not row or row["manager_id"] is None:
+            break
+        manager_id = row["manager_id"]
+        # Prevent infinite loops
+        if manager_id in chain or manager_id == user_id:
+            break
+        chain.append(manager_id)
+        current_id = manager_id
+        depth += 1
+    return chain
+
+
 def get_current_user_optional(request: Request) -> dict | None:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):

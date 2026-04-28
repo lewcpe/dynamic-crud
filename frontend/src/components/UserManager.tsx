@@ -16,7 +16,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Users, Shield, ShieldOff, Trash2 } from "lucide-react"
+import { Users, Shield, ShieldOff, Trash2, UserCog } from "lucide-react"
 
 interface Props {
   onChange: () => void
@@ -52,6 +52,19 @@ export default function UserManager({ onChange }: Props) {
     onChange()
   }
 
+  const handleSetManager = async (userId: number, managerId: string) => {
+    const id = managerId === "none" ? null : Number(managerId)
+    await api.setManager(userId, id)
+    loadUsers()
+    onChange()
+  }
+
+  const getUserName = (id: number | null) => {
+    if (id == null) return null
+    const u = users.find((u) => u.id === id)
+    return u?.name || u?.email || `#${id}`
+  }
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -59,39 +72,63 @@ export default function UserManager({ onChange }: Props) {
           <Users className="h-4 w-4 mr-1" /> Users
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Manage Users</DialogTitle>
         </DialogHeader>
         <div className="space-y-2 max-h-96 overflow-y-auto">
           {users.map((u) => (
-            <div key={u.id} className="flex items-center justify-between rounded bg-muted/50 px-3 py-2 text-sm">
-              <div>
-                <span className="font-medium">{u.name || u.email}</span>
-                <span className="ml-2 text-muted-foreground">({u.email})</span>
-                <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${u.role === "admin" ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}>
-                  {u.role}
-                </span>
+            <div key={u.id} className="rounded bg-muted/50 px-3 py-2 text-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{u.name || u.email}</span>
+                  <span className="text-muted-foreground">({u.email})</span>
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${u.role === "admin" ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}>
+                    {u.role}
+                  </span>
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => handleToggleAdmin(u)}
+                    title={u.role === "admin" ? "Remove admin" : "Make admin"}
+                  >
+                    {u.role === "admin" ? <ShieldOff className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-destructive"
+                    onClick={() => handleDelete(u)}
+                    title="Delete user"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
-              <div className="flex gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => handleToggleAdmin(u)}
-                  title={u.role === "admin" ? "Remove admin" : "Make admin"}
+              <div className="mt-2 flex items-center gap-2">
+                <UserCog className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Manager:</span>
+                <Select
+                  value={u.manager_id != null ? String(u.manager_id) : "none"}
+                  onValueChange={(v) => handleSetManager(u.id, v)}
                 >
-                  {u.role === "admin" ? <ShieldOff className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-destructive"
-                  onClick={() => handleDelete(u)}
-                  title="Delete user"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                  <SelectTrigger className="h-7 text-xs flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    {users
+                      .filter((m) => m.id !== u.id)
+                      .map((m) => (
+                        <SelectItem key={m.id} value={String(m.id)}>
+                          {m.name || m.email}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           ))}

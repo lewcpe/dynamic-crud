@@ -50,6 +50,8 @@ export const api = {
   deleteUser: (id: number) => request(`/users/${id}`, { method: "DELETE" }),
   makeAdmin: (id: number) => request(`/users/${id}/make-admin`, { method: "POST" }),
   removeAdmin: (id: number) => request(`/users/${id}/remove-admin`, { method: "POST" }),
+  setManager: (id: number, managerId: number | null) =>
+    request(`/users/${id}/manager`, { method: "PUT", body: JSON.stringify({ manager_id: managerId }) }) as Promise<User>,
 
   // groups (admin)
   listGroups: () => request("/groups") as Promise<Group[]>,

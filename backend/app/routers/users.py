@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from ..database import get_db
-from ..models import RegisterRequest, LoginRequest, UserUpdate
-from ..auth import hash_password, verify_password, create_access_token, get_user_by_email, get_user_by_id, get_current_user, require_admin
+from ..models import RegisterRequest, LoginRequest, UserUpdate, SetManager
+from ..auth import hash_password, verify_password, create_access_token, get_user_by_email, get_user_by_id, get_current_user, require_admin, get_manager_chain
 
 router = APIRouter(tags=["auth"])
 
@@ -123,3 +123,42 @@ def remove_admin(user_id: int, admin: dict = Depends(require_admin)):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+@router.put("/api/users/{user_id}/manager")
+def set_manager(user_id: int, payload: SetManager, admin: dict = Depends(require_admin)):
+    conn = get_db()
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    if payload.manager_id is not None:
+        if payload.manager_id == user_id:
+            conn.close()
+            raise HTTPException(400, "User cannot be their own manager")
+        manager = get_user_by_id(conn, payload.manager_id)
+        if not manager:
+            conn.close()
+            raise HTTPException(404, "Manager not found")
+    conn.execute("UPDATE users SET manager_id = ? WHERE id = ?", (payload.manager_id, user_id))
+    conn.commit()
+    user = get_user_by_id(conn, user_id)
+    conn.close()
+    return user
+
+
+@router.get("/api/users/{user_id}/manager-chain")
+def get_user_manager_chain(user_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    target = get_user_by_id(conn, user_id)
+    if not target:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    chain = get_manager_chain(conn, user_id)
+    managers = []
+    for mid in chain:
+        m = get_user_by_id(conn, mid)
+        if m:
+            managers.append({"id": m["id"], "name": m["name"], "email": m["email"]})
+    conn.close()
+    return {"user_id": user_id, "managers": managers}

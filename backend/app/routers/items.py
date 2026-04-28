@@ -102,6 +102,9 @@ def get_item(table_id: int, item_id: int, user: dict | None = Depends(get_curren
         raise HTTPException(404, "Item not found")
     item = item_row_to_dict(row, fields)
     item = enrich_item_with_relationships(conn, table_id, item)
+    if not check_table_permission(conn, table_id, "view", user, item):
+        conn.close()
+        raise HTTPException(403, "Not authorized to view this item")
     conn.close()
     return item
 

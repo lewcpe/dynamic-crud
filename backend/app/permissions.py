@@ -148,6 +148,7 @@ class RuleParser:
     TOKEN_PATTERN = re.compile(
         r'"[^"]*"'
         r"|'[^']*'"
+        r"|@request\.auth\.managers?\.\w+"
         r"|@request\.auth\.\w+"
         r"|@now|@todayStart|@todayEnd|@yesterday|@tomorrow"
         r"|@yearStart|@yearEnd|@monthStart|@monthEnd"
@@ -238,6 +239,16 @@ class RuleParser:
         if tok is None:
             raise ValueError("Unexpected end of rule")
 
+        if tok.startswith("@request.auth.managers."):
+            self.consume()
+            field = tok.split(".")[-1]
+            return ("auth_managers", field)
+
+        if tok.startswith("@request.auth.manager."):
+            self.consume()
+            field = tok.split(".")[-1]
+            return ("auth_manager", field)
+
         if tok.startswith("@request.auth."):
             self.consume()
             return ("auth", tok.split(".")[-1])
@@ -270,9 +281,16 @@ class RuleParser:
         if "." in tok:
             parts = tok.split(".", 1)
             return ("field_rel", parts[0], parts[1])
+        # Handle dotted field references like "assigned_to.id"
+        if self.peek() == ".":
+            self.consume()  # consume the dot
+            if self.peek() is not None and self.peek().isidentifier():
+                field2 = self.consume()
+                return ("field_rel", tok, field2)
         return ("field", tok)
 
     def to_sql_where(self, params: list) -> str:
+        self.pos = 0
         ast = self.parse()
         return self._ast_to_sql(ast, params)
 
@@ -301,6 +319,42 @@ class RuleParser:
             else:
                 params.append(None)
             return "?"
+        if node[0] == "auth_manager":
+            field = node[1]
+            if self.user:
+                from .auth import get_manager_chain
+                chain = get_manager_chain(self.conn, self.user["id"], levels=1)
+                if chain:
+                    m = self.conn.execute("SELECT * FROM users WHERE id = ?", (chain[0],)).fetchone()
+                    params.append(dict(m).get(field) if m else None)
+                else:
+                    params.append(None)
+            else:
+                params.append(None)
+            return "?"
+        if node[0] == "auth_managers":
+            # For SQL, we need to use IN clause with manager IDs
+            field = node[1]
+            if self.user:
+                from .auth import get_manager_chain
+                chain = get_manager_chain(self.conn, self.user["id"], levels=0)
+                if chain:
+                    values = []
+                    for mid in chain:
+                        m = self.conn.execute("SELECT * FROM users WHERE id = ?", (mid,)).fetchone()
+                        if m:
+                            val = dict(m).get(field)
+                            if val is not None:
+                                values.append(val)
+                    if values:
+                        placeholders = ", ".join("?" for _ in values)
+                        params.extend(values)
+                        return f"({placeholders})"
+                params.append(None)
+                return "?"
+            else:
+                params.append(None)
+                return "?"
         if node[0] == "macro":
             return self._macro_to_sql(node[1])
         if node[0] == "literal":
@@ -347,6 +401,7 @@ class RuleParser:
         return "NULL"
 
     def evaluate_for_item(self, item: dict) -> bool:
+        self.pos = 0
         ast = self.parse()
         return self._eval_ast(ast, item)
 
@@ -371,6 +426,33 @@ class RuleParser:
             if not self.user:
                 return None
             return self.user.get(node[1])
+        if node[0] == "auth_manager":
+            if not self.user:
+                return None
+            from .auth import get_manager_chain
+            chain = get_manager_chain(self.conn, self.user["id"], levels=1)
+            if not chain:
+                return None
+            manager = self.conn.execute("SELECT * FROM users WHERE id = ?", (chain[0],)).fetchone()
+            if not manager:
+                return None
+            return dict(manager).get(node[1])
+        if node[0] == "auth_managers":
+            if not self.user:
+                return None
+            from .auth import get_manager_chain
+            chain = get_manager_chain(self.conn, self.user["id"], levels=0)
+            if not chain:
+                return None
+            field = node[1]
+            values = []
+            for mid in chain:
+                m = self.conn.execute("SELECT * FROM users WHERE id = ?", (mid,)).fetchone()
+                if m:
+                    val = dict(m).get(field)
+                    if val is not None:
+                        values.append(val)
+            return values if values else None
         if node[0] == "literal":
             return node[1]
         if node[0] == "field":
@@ -405,6 +487,10 @@ class RuleParser:
                 if op == "?=":
                     return right in left
                 return right not in left
+            if isinstance(right, list):
+                if op == "?=":
+                    return left in right
+                return left not in right
             return self._compare(op[1:], left, right)
 
         if op == "=":
