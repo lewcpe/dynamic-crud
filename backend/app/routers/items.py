@@ -11,20 +11,41 @@ router = APIRouter(prefix="/api/tables/{table_id}/items", tags=["items"])
 
 
 @router.get("/options")
-def list_item_options(table_id: int, user: dict | None = Depends(get_current_user_optional)):
+def list_item_options(
+    table_id: int,
+    q: str = "",
+    limit: int = 20,
+    user: dict | None = Depends(get_current_user_optional),
+):
     """Get items as id+label options for relationship dropdowns."""
-    from ..helpers import get_item_label
+    from ..helpers import get_item_label, format_represent, get_fields, item_row_to_dict
     conn = get_db()
     ensure_table_exists(conn, table_id)
     if not check_table_permission(conn, table_id, "list", user):
         conn.close()
         raise HTTPException(403, "Not authorized")
     items_table = get_items_table(table_id)
-    rows = conn.execute(f"SELECT id FROM {items_table} ORDER BY id").fetchall()
+
+    if q:
+        rows = conn.execute(f"SELECT id, owner, data FROM {items_table} ORDER BY id LIMIT ?", (limit * 3,)).fetchall()
+    else:
+        rows = conn.execute(f"SELECT id, owner, data FROM {items_table} ORDER BY id LIMIT ?", (limit,)).fetchall()
+
+    fields = get_fields(conn, table_id)
     options = []
     for r in rows:
-        label = get_item_label(conn, table_id, r["id"])
+        item = item_row_to_dict(r, fields)
+        label = ""
+        table_info = conn.execute("SELECT represent FROM dynamic_tables WHERE id = ?", (table_id,)).fetchone()
+        if table_info and table_info["represent"]:
+            label = format_represent(table_info["represent"], item)
+        if not label.strip():
+            label = r["owner"] or str(r["id"])
+        if q and q.lower() not in label.lower():
+            continue
         options.append({"id": r["id"], "label": label})
+        if len(options) >= limit:
+            break
     conn.close()
     return options
 

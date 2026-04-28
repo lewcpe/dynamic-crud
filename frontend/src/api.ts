@@ -75,8 +75,20 @@ export const api = {
   deleteTable: (id: number) => request(`/tables/${id}`, { method: "DELETE" }),
 
   // system tables (for relationship dropdowns)
-  listSystemUsers: () => request("/system/users") as Promise<{ id: number; label: string }[]>,
-  listSystemGroups: () => request("/system/groups") as Promise<{ id: number; label: string }[]>,
+  listSystemUsers: (q?: string, limit?: number) => {
+    const sp = new URLSearchParams()
+    if (q) sp.set("q", q)
+    if (limit) sp.set("limit", String(limit))
+    const qs = sp.toString()
+    return request(`/system/users${qs ? `?${qs}` : ""}`) as Promise<{ id: number; label: string }[]>
+  },
+  listSystemGroups: (q?: string, limit?: number) => {
+    const sp = new URLSearchParams()
+    if (q) sp.set("q", q)
+    if (limit) sp.set("limit", String(limit))
+    const qs = sp.toString()
+    return request(`/system/groups${qs ? `?${qs}` : ""}`) as Promise<{ id: number; label: string }[]>
+  },
 
   // fields (table-scoped)
   listFields: (tableId: number) =>
@@ -125,8 +137,13 @@ export const api = {
     request(`/tables/${tableId}/my-permissions`) as Promise<Record<string, boolean>>,
 
   // items (table-scoped)
-  listItemOptions: (tableId: number) =>
-    request(`/tables/${tableId}/items/options`) as Promise<{ id: number; label: string }[]>,
+  listItemOptions: (tableId: number, q?: string, limit?: number) => {
+    const sp = new URLSearchParams()
+    if (q) sp.set("q", q)
+    if (limit) sp.set("limit", String(limit))
+    const qs = sp.toString()
+    return request(`/tables/${tableId}/items/options${qs ? `?${qs}` : ""}`) as Promise<{ id: number; label: string }[]>
+  },
   listItems: (tableId: number, params?: { page?: number; page_size?: number; search?: string; sort_by?: string; sort_dir?: string }) => {
     const sp = new URLSearchParams()
     if (params?.page) sp.set("page", String(params.page))

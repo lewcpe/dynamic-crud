@@ -9,12 +9,14 @@ const fields: Field[] = [
   { id: 2, table_id: 1, field_name: "age", field_type: "int", field_label: "Age", field_order: 1, created_at: "" },
 ]
 
-const adminUser: User = { id: 1, email: "admin@test.com", name: "Admin", role: "admin", manager_id: null, created_at: "" }
 const regularUser: User = { id: 2, email: "user@test.com", name: "User", role: "user", manager_id: null, created_at: "" }
 
 beforeEach(() => {
   vi.restoreAllMocks()
-  vi.stubGlobal("fetch", vi.fn())
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ hidden_columns: null }),
+  }))
 })
 
 describe("ItemForm", () => {

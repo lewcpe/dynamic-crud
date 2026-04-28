@@ -102,16 +102,32 @@ def remove_group_member(group_id: int, user_id: int, admin: dict = Depends(requi
 
 
 @router.get("/api/system/users")
-def list_system_users(user: dict = Depends(get_current_user)):
+def list_system_users(q: str = "", limit: int = 20, user: dict = Depends(get_current_user)):
     conn = get_db()
-    rows = conn.execute("SELECT id, name, email FROM users ORDER BY id").fetchall()
+    if q:
+        rows = conn.execute(
+            "SELECT id, name, email FROM users WHERE name LIKE ? OR email LIKE ? ORDER BY id LIMIT ?",
+            (f"%{q}%", f"%{q}%", limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, name, email FROM users ORDER BY id LIMIT ?", (limit,)
+        ).fetchall()
     conn.close()
     return [{"id": r["id"], "label": r["name"] or r["email"]} for r in rows]
 
 
 @router.get("/api/system/groups")
-def list_system_groups(user: dict = Depends(get_current_user)):
+def list_system_groups(q: str = "", limit: int = 20, user: dict = Depends(get_current_user)):
     conn = get_db()
-    rows = conn.execute("SELECT id, name FROM groups ORDER BY id").fetchall()
+    if q:
+        rows = conn.execute(
+            "SELECT id, name FROM groups WHERE name LIKE ? ORDER BY id LIMIT ?",
+            (f"%{q}%", limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, name FROM groups ORDER BY id LIMIT ?", (limit,)
+        ).fetchall()
     conn.close()
     return [{"id": r["id"], "label": r["name"]} for r in rows]

@@ -1,14 +1,7 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { api } from "../api"
 import type { User } from "../types"
 import { Button } from "@/components/ui/button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -17,6 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Users, Shield, ShieldOff, Trash2, UserCog } from "lucide-react"
+import SearchSelect from "./SearchSelect"
 
 interface Props {
   onChange: () => void
@@ -52,18 +46,16 @@ export default function UserManager({ onChange }: Props) {
     onChange()
   }
 
-  const handleSetManager = async (userId: number, managerId: string) => {
-    const id = managerId === "none" ? null : Number(managerId)
-    await api.setManager(userId, id)
+  const handleSetManager = async (userId: number, managerId: number | null) => {
+    await api.setManager(userId, managerId)
     loadUsers()
     onChange()
   }
 
-  const getUserName = (id: number | null) => {
-    if (id == null) return null
-    const u = users.find((u) => u.id === id)
-    return u?.name || u?.email || `#${id}`
-  }
+  const fetchManagerOptions = useCallback(async (q: string, excludeId: number) => {
+    const results = await api.listSystemUsers(q, 20)
+    return results.filter((u) => u.id !== excludeId)
+  }, [])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -109,26 +101,16 @@ export default function UserManager({ onChange }: Props) {
                 </div>
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <UserCog className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Manager:</span>
-                <Select
-                  value={u.manager_id != null ? String(u.manager_id) : "none"}
-                  onValueChange={(v) => handleSetManager(u.id, v)}
-                >
-                  <SelectTrigger className="h-7 text-xs flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
-                    {users
-                      .filter((m) => m.id !== u.id)
-                      .map((m) => (
-                        <SelectItem key={m.id} value={String(m.id)}>
-                          {m.name || m.email}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+                <UserCog className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <span className="text-xs text-muted-foreground shrink-0">Manager:</span>
+                <div className="flex-1 min-w-0">
+                  <SearchSelect
+                    value={u.manager_id}
+                    onChange={(id) => handleSetManager(u.id, id)}
+                    fetchOptions={(q) => fetchManagerOptions(q, u.id)}
+                    placeholder="None"
+                  />
+                </div>
               </div>
             </div>
           ))}

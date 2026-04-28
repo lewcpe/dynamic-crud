@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { api } from "../api"
 import type { Permission, User, Group } from "../types"
 import { Button } from "@/components/ui/button"
@@ -19,6 +19,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { X, Plus, Shield } from "lucide-react"
+import SearchSelect from "./SearchSelect"
 
 interface Props {
   tableId: number
@@ -41,7 +42,7 @@ export default function PermissionManager({ tableId, onChange }: Props) {
   const [error, setError] = useState("")
 
   const [targetType, setTargetType] = useState("role")
-  const [targetId, setTargetId] = useState("")
+  const [targetId, setTargetId] = useState<number | null>(null)
   const [targetRole, setTargetRole] = useState("user")
   const [rules, setRules] = useState<Record<string, string>>({
     list: "", view: "", create: "", update: "", delete: "",
@@ -60,6 +61,14 @@ export default function PermissionManager({ tableId, onChange }: Props) {
     setPerms(p)
   }
 
+  const fetchUserOptions = useCallback(async (q: string) => {
+    return api.listSystemUsers(q, 20)
+  }, [])
+
+  const fetchGroupOptions = useCallback(async (q: string) => {
+    return api.listSystemGroups(q, 20)
+  }, [])
+
   const handleAdd = async () => {
     setError("")
     try {
@@ -72,11 +81,11 @@ export default function PermissionManager({ tableId, onChange }: Props) {
         delete_rule: rules.delete || null,
       }
       if (targetType === "role") data.target_role = targetRole
-      if (targetType === "user" || targetType === "group") data.target_id = Number(targetId)
+      if (targetType === "user" || targetType === "group") data.target_id = targetId
 
       await api.createPermission(tableId, data)
       setTargetType("role")
-      setTargetId("")
+      setTargetId(null)
       setTargetRole("user")
       setRules({ list: "", view: "", create: "", update: "", delete: "" })
       loadPerms()
@@ -156,7 +165,7 @@ export default function PermissionManager({ tableId, onChange }: Props) {
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1.5">
                 <Label>Target Type</Label>
-                <Select value={targetType} onValueChange={setTargetType}>
+                <Select value={targetType} onValueChange={(v) => { setTargetType(v); setTargetId(null) }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {TARGET_TYPES.map((t) => (
@@ -180,27 +189,23 @@ export default function PermissionManager({ tableId, onChange }: Props) {
               {targetType === "user" && (
                 <div className="space-y-1.5">
                   <Label>Target User</Label>
-                  <Select value={targetId} onValueChange={setTargetId}>
-                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                    <SelectContent>
-                      {users.map((u) => (
-                        <SelectItem key={u.id} value={String(u.id)}>{u.email}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchSelect
+                    value={targetId}
+                    onChange={setTargetId}
+                    fetchOptions={fetchUserOptions}
+                    placeholder="Search users..."
+                  />
                 </div>
               )}
               {targetType === "group" && (
                 <div className="space-y-1.5">
                   <Label>Target Group</Label>
-                  <Select value={targetId} onValueChange={setTargetId}>
-                    <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-                    <SelectContent>
-                      {groups.map((g) => (
-                        <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SearchSelect
+                    value={targetId}
+                    onChange={setTargetId}
+                    fetchOptions={fetchGroupOptions}
+                    placeholder="Search groups..."
+                  />
                 </div>
               )}
             </div>
