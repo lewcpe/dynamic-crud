@@ -5,6 +5,9 @@ import TableSelector from "./components/TableSelector"
 import TableManager from "./components/TableManager"
 import FieldManager from "./components/FieldManager"
 import RelationshipManager from "./components/RelationshipManager"
+import PermissionManager from "./components/PermissionManager"
+import UserManager from "./components/UserManager"
+import GroupManager from "./components/GroupManager"
 import DataTable from "./components/DataTable"
 
 export default function App() {
@@ -205,8 +208,11 @@ export default function App() {
                       relationships={relationships}
                       onChange={handleDataChange}
                     />
+                    <PermissionManager tableId={currentTableId} onChange={handleDataChange} />
                   </>
                 )}
+                <UserManager onChange={handleDataChange} />
+                <GroupManager onChange={handleDataChange} />
               </>
             )}
           </div>
