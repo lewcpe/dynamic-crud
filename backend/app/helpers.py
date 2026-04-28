@@ -30,11 +30,18 @@ def get_default_represent(conn, table_id: int) -> str:
 
 
 def format_represent(represent: str, item: dict) -> str:
+    # Build case-insensitive lookup for fields
+    fields = item.get("fields", {})
+    lower_fields = {k.lower(): v for k, v in fields.items()}
+
     def replacer(m):
         key = m.group(1)
-        val = item.get("fields", {}).get(key)
+        # Try exact match first, then case-insensitive
+        val = fields.get(key)
         if val is None:
-            val = item.get(key, "")
+            val = lower_fields.get(key.lower())
+        if val is None:
+            val = item.get(key)
         return str(val) if val is not None else ""
     return re.sub(r"\{([^}]+)\}", replacer, represent)
 
