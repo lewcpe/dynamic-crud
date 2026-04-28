@@ -128,7 +128,7 @@ def test_auth_rule_requires_login(client):
     )
     resp = client.get(f"/api/tables/{table_id}/items")
     assert resp.status_code == 200
-    assert resp.json()["total"] == 1
+    assert resp.json()["total"] == 0
 
 
 def test_my_permissions(client):
